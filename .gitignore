@@ -1,0 +1,64 @@
+# ============================================================
+# rm_dart .gitignore
+# 只提交源码、工程配置与文档；编译产物、缓存和本地设置一律忽略。
+# ============================================================
+
+# ---------- Keil MDK 编译输出 ----------
+# 链接输出目录（.o/.d/.crf/.axf/.hex/.map/.lst/.htm/.dep 等全部在此）
+rm_dart/MDK-ARM/MA_DartGuide/
+*.o
+*.d
+*.crf
+*.axf
+*.hex
+*.bin
+*.map
+*.lst
+*.lnp
+*.dep
+*.htm
+*.iex
+*.i
+*.__i
+*.Bak
+
+# 注意：*.sct 是链接脚本。当前工程未显式引用（ScatterFile 为空，
+# 由 Keil 自动生成到输出目录），若以后改为手动链接脚本，请保留该文件。
+
+# ---------- Keil 用户界面 / 调试器本地设置 ----------
+*.uvguix.*
+*.uvoptx
+JLinkLog.txt
+JLinkSettings.ini
+
+# ---------- Python ----------
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.venv/
+venv/
+env/
+
+# ---------- 日志与临时文件 ----------
+*.log
+*.tmp
+*.bak
+*~
+.tmp_docs/
+.tmp/
+
+# ---------- 机载存储产物（录像与遥测导出，位于 SD 卡，不应入库） ----------
+rec_*.bin
+telem_*.csv
+*.mjpeg
+*.mp4
+
+# ---------- 操作系统 / 编辑器 ----------
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+.DS_Store
+.vscode/
+.idea/
+*.swp
