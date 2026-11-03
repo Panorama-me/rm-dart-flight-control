@@ -32,7 +32,8 @@ MODE_DEFAULT = 0
 MODE_PITCH = 1
 MODE_YAW = 2
 MODE_BOTH = 3
-MODE_NAMES = ("D", "P", "Y", "B")
+MODE_DEBUG = 4
+MODE_NAMES = ("D", "P", "Y", "B", "G")
 
 # 飞行状态：由下位机遥测给出
 STATE_READY = 0
@@ -42,7 +43,8 @@ STATE_LAUNCHED = 3
 STATE_ASCENT = 4
 STATE_DESCENT = 5
 STATE_VISION_ERROR = 6
-STATE_NAMES = ("R", "I", "S", "L", "A", "D", "E")
+STATE_DEBUG = 7
+STATE_NAMES = ("R", "I", "S", "L", "A", "D", "E", "G")
 
 mode = MODE_BOTH
 
@@ -82,12 +84,14 @@ ACK_FRAME_LEN = 4
 RESET_SOF = 0x5B
 RESET_FRAME_LEN = 4
 
-# 遥测：F103 -> OpenMV，24 字节
+# 遥测：F103 -> OpenMV，37 字节
 TELEM_SOF = 0x55
 TELEM_EOF = 0xFE
-TELEM_FRAME_LEN = 24
+TELEM_FRAME_LEN = 37
 TELEM_ANGLE_SCALE = 100.0
 TELEM_GYRO_SCALE = 10.0
+TELEM_LOS_SCALE = 100.0
+TELEM_SERVO_SCALE = 10.0
 
 T_GYRO_X_H = 1
 T_GYRO_X_L = 2
@@ -110,8 +114,21 @@ T_OUT_ROLL_L = 18
 T_MODE_INDEX = 19
 T_STATE_INDEX = 20
 T_FLAGS_INDEX = 21
-T_EOF_INDEX = 22
-T_CRC_INDEX = 23
+T_LOS_YAW_H = 22
+T_LOS_YAW_L = 23
+T_LOS_PITCH_H = 24
+T_LOS_PITCH_L = 25
+T_SERVO1_H = 26
+T_SERVO1_L = 27
+T_SERVO2_H = 28
+T_SERVO2_L = 29
+T_SERVO3_H = 30
+T_SERVO3_L = 31
+T_SERVO4_H = 32
+T_SERVO4_L = 33
+T_DBG_FLAGS_INDEX = 34
+T_EOF_INDEX = 35
+T_CRC_INDEX = 36
 
 F_LINK_VALID = 0x01
 F_TARGET_VALID = 0x02
@@ -212,7 +229,7 @@ def wait_for_handshake():
             if data:
                 buf.extend(data)
                 nowp = time.ticks_ms()
-                if time.ticks_diff(nowp, last_rx_print) > 500:
+                if time.ticks_diff(nowp, last_rx_print) > 2000:
                     print("rx first bytes:", data[:8])
                     last_rx_print = nowp
 
@@ -227,7 +244,7 @@ def wait_for_handshake():
                 continue
 
             m = buf[idx + 1]
-            if m > MODE_BOTH:
+            if m > MODE_DEBUG:
                 idx += HS_FRAME_LEN
                 continue
 
@@ -277,11 +294,14 @@ telem_out_roll = 0.0
 telem_mode = MODE_BOTH
 telem_state = STATE_READY
 telem_flags = 0
+telem_los_yaw = 0.0
+telem_los_pitch = 0.0
+telem_servo = [0.0, 0.0, 0.0, 0.0]
+telem_dbg_flags = 0
 telem_link = 0
 telem_last_ms = 0
 telem_ok_printed = False
 last_no_link_print = 0
-telem_diag_count = 0
 telem_frames = 0
 flight_seen = False
 descent_seen_ms = None
@@ -293,8 +313,9 @@ def poll_telemetry():
     global telem_pitch, telem_yaw, telem_roll
     global telem_out_pitch, telem_out_yaw, telem_out_roll
     global telem_mode, telem_state, telem_flags
+    global telem_los_yaw, telem_los_pitch, telem_dbg_flags
     global telem_link, telem_last_ms
-    global telem_ok_printed, last_no_link_print, telem_diag_count
+    global telem_ok_printed, last_no_link_print
     global telem_frames
     global mode
     global flight_seen, descent_seen_ms
@@ -314,15 +335,6 @@ def poll_telemetry():
         if telem_buf[telem_idx] != TELEM_SOF:
             telem_idx += 1
             continue
-
-        if telem_diag_count < 3:
-            print("telem cand:", telem_buf[telem_idx:telem_idx + TELEM_FRAME_LEN])
-            print("eof/calc/recv:",
-                  telem_buf[telem_idx + T_EOF_INDEX],
-                  crc8_lsb(telem_buf, telem_idx,
-                           telem_idx + T_CRC_INDEX),
-                  telem_buf[telem_idx + T_CRC_INDEX])
-            telem_diag_count += 1
 
         if (telem_buf[telem_idx + T_EOF_INDEX] != TELEM_EOF or
                 crc8_lsb(telem_buf, telem_idx,
@@ -356,6 +368,19 @@ def poll_telemetry():
         telem_mode = telem_buf[b + T_MODE_INDEX]
         telem_state = telem_buf[b + T_STATE_INDEX]
         telem_flags = telem_buf[b + T_FLAGS_INDEX]
+        telem_los_yaw = s16(telem_buf[b + T_LOS_YAW_H],
+                            telem_buf[b + T_LOS_YAW_L]) / TELEM_LOS_SCALE
+        telem_los_pitch = s16(telem_buf[b + T_LOS_PITCH_H],
+                              telem_buf[b + T_LOS_PITCH_L]) / TELEM_LOS_SCALE
+        telem_servo[0] = s16(telem_buf[b + T_SERVO1_H],
+                             telem_buf[b + T_SERVO1_L]) / TELEM_SERVO_SCALE
+        telem_servo[1] = s16(telem_buf[b + T_SERVO2_H],
+                             telem_buf[b + T_SERVO2_L]) / TELEM_SERVO_SCALE
+        telem_servo[2] = s16(telem_buf[b + T_SERVO3_H],
+                             telem_buf[b + T_SERVO3_L]) / TELEM_SERVO_SCALE
+        telem_servo[3] = s16(telem_buf[b + T_SERVO4_H],
+                             telem_buf[b + T_SERVO4_L]) / TELEM_SERVO_SCALE
+        telem_dbg_flags = telem_buf[b + T_DBG_FLAGS_INDEX]
 
         # Latch the flight transitions from every valid UART frame. The camera
         # loop may skip a short LAUNCHED state while writing an image frame.
@@ -364,7 +389,7 @@ def poll_telemetry():
         if telem_state == STATE_DESCENT and descent_seen_ms is None:
             descent_seen_ms = time.ticks_ms()
 
-        if telem_mode <= MODE_BOTH:
+        if telem_mode <= MODE_DEBUG:
             mode = telem_mode
 
         telem_idx += TELEM_FRAME_LEN
@@ -513,7 +538,8 @@ def append_telemetry_log(now_ms, frame_number):
     if not TELEM_LOG_ENABLE or record_dir is None or telem_log_done:
         return
     if telem_log_stream is None:
-        if not (STATE_LAUNCHED <= telem_state <= STATE_DESCENT):
+        if not ((STATE_LAUNCHED <= telem_state <= STATE_DESCENT) or
+                telem_state == STATE_DEBUG):
             return
         stream = None
         try:
@@ -521,7 +547,8 @@ def append_telemetry_log(now_ms, frame_number):
             stream = open(path, "w")
             stream.write("t_ms,frame,mode,state,flags,gx_dps,gy_dps,gz_dps,"
                          "pitch_deg,yaw_deg,roll_deg,out_pitch_deg,"
-                         "out_yaw_deg,out_roll_deg\n")
+                         "out_yaw_deg,out_roll_deg,los_yaw_deg,los_pitch_deg,"
+                         "s1_deg,s2_deg,s3_deg,s4_deg\n")
         except Exception as e:
             if stream is not None:
                 try:
@@ -539,12 +566,16 @@ def append_telemetry_log(now_ms, frame_number):
 
     try:
         telem_log_stream.write(
-            "%d,%d,%d,%d,%d,%.1f,%.1f,%.1f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f\n"
+            "%d,%d,%d,%d,%d,%.1f,%.1f,%.1f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,"
+            "%.2f,%.2f,%.1f,%.1f,%.1f,%.1f\n"
             % (time.ticks_diff(now_ms, start), frame_number,
                telem_mode, telem_state, telem_flags,
                telem_gyro_x, telem_gyro_y, telem_gyro_z,
                telem_pitch, telem_yaw, telem_roll,
-               telem_out_pitch, telem_out_yaw, telem_out_roll))
+               telem_out_pitch, telem_out_yaw, telem_out_roll,
+               telem_los_yaw, telem_los_pitch,
+               telem_servo[0], telem_servo[1],
+               telem_servo[2], telem_servo[3]))
     except Exception as e:
         print("[DEBUG] telem log write err:", e)
         stop_telemetry_log()
@@ -811,8 +842,21 @@ def draw_overlay(img, blob, found_flag, cur_roi, fps, t_ms,
                         "M:%s S:-- L:0" % mode_name(mode_value),
                         color=(255, 255, 0), scale=1)
 
+    if link:
+        img.draw_string((2, 58),
+                        "LOS Y:%.1f P:%.1f" % (telem_los_yaw, telem_los_pitch),
+                        color=(0, 255, 255), scale=1)
+        img.draw_string((2, 66),
+                        "S:%.0f %.0f %.0f %.0f"
+                        % (telem_servo[0], telem_servo[1],
+                           telem_servo[2], telem_servo[3]),
+                        color=(0, 255, 255), scale=1)
+    else:
+        img.draw_string((2, 58), "LOS --", color=(0, 255, 255), scale=1)
+        img.draw_string((2, 66), "S:-- -- -- --", color=(0, 255, 255), scale=1)
+
     if file_name:
-        img.draw_string((2, 58), file_name, color=(255, 255, 0), scale=1)
+        img.draw_string((2, 74), file_name, color=(255, 255, 0), scale=1)
 
     img.draw_rectangle(cur_roi, color=(0, 0, 255))
 
@@ -840,6 +884,7 @@ print("RECORD_DIR =", record_dir)
 start = time.ticks_ms()
 frame_cnt = 0
 gc_counter = 0
+last_dbg_print = 0
 cur_roi = INIT_ROI
 
 try:
@@ -888,6 +933,14 @@ try:
             draw_found_flag = 0
 
         fps = clock.fps()
+
+        # 调试模式：5 Hz 打印一次，避免刷屏拖慢主循环
+        if mode == MODE_DEBUG and time.ticks_diff(t_ms, last_dbg_print) >= 200:
+            print("LOS Y%.1f P%.1f | S %.0f %.0f %.0f %.0f"
+                  % (telem_los_yaw, telem_los_pitch,
+                     telem_servo[0], telem_servo[1],
+                     telem_servo[2], telem_servo[3]))
+            last_dbg_print = t_ms
 
         draw_overlay(img, max_blob, draw_found_flag, cur_roi, fps, t_ms,
                      telem_link, mode, telem_state, telem_flags,

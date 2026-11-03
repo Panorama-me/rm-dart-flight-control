@@ -10,8 +10,13 @@
 /* 全局飞控运行时数据结构，保存状态、PID、遥测、视觉滤波等信息 */
 DartControlRuntime_t DartControl;
 
-/* Calculated once in control_Init(); avoids software tanf() in every cycle. */
-static float VisionFocalPx;
+/* 在 control_Init() 中只赋值一次，避免每个控制周期重复计算。 */
+static float VisionFocalPxX;
+static float VisionFocalPxY;
+static float debug_ref_yaw_deg;
+static float debug_ref_pitch_deg;
+static uint32_t debug_imu_ready_ms;
+static uint8_t debug_ref_valid;
 
 /* 握手 ACK 接收缓冲（OpenMV -> F103） */
 static uint8_t ack_buf[DART_ACK_FRAME_LEN];
@@ -87,7 +92,7 @@ static void reset_all_control_pids(void)
     reset_pid(&DartControl.roll_pid);
 }
 
-/* Gyro rate (rad/s input) supplies the PID derivative feedback. */
+/* 陀螺角速率（输入单位 rad/s）作为 PID 的微分反馈。 */
 static void gyro_rate_derivative(PID_t *pid)
 {
     pid->Dout = -pid->Kd * pid->Measure;
@@ -97,7 +102,7 @@ static float calculate_axis_pid(PID_t *pid, float error, float rate_rad_s)
 {
     float rate_deg_s = rate_rad_s * DART_RAD_TO_DEG;
 
-    /* Ref - Measure stays equal to the angle error; Measure carries gyro rate. */
+    /* Ref - Measure 仍等于角度误差；Measure 输入的是陀螺角速率。 */
     return PID_Calculate(pid, rate_deg_s, rate_deg_s + error);
 }
 
@@ -174,7 +179,7 @@ static void write_servo_outputs(float pitch_us, float yaw_us, float roll_us)
     yaw_us *= DART_YAW_OUTPUT_SIGN;
     roll_us *= DART_ROLL_OUTPUT_SIGN;
 
-    /* X-tail allocation. Servo numbering and signs require restrained testing. */
+    /* X 型尾翼混控分配。舵机编号与方向必须在约束状态下逐项验证。 */
     /* X 型尾翼分配：四个舵机分别组合俯仰、偏航、横滚指令 */
     mixed[0] = pitch_us + yaw_us + roll_us;
     mixed[1] = pitch_us - yaw_us + roll_us;
@@ -198,7 +203,10 @@ static void write_servo_outputs(float pitch_us, float yaw_us, float roll_us)
         else if ((uint16_t)(requested + DART_SERVO_MAX_STEP_US) < previous)
             requested = (uint16_t)(previous - DART_SERVO_MAX_STEP_US);
 
-        set_servo_compare(i, requested);
+        DartControl.telemetry.servo_us[i] = requested;
+        /* 调试模式只算不驱动：遥测照常更新，PWM 保持中位。 */
+        if (DART_MODE != DART_MODE_DEBUG)
+            set_servo_compare(i, requested);
     }
 }
 
@@ -288,7 +296,7 @@ static void vision_ekf_predict(DartVisionAxisEkf_t *ekf, float dt)
     ekf->p11 = p11;
 }
 
-/* Reject a whole vision frame if either axis is inconsistent with prediction. */
+/* 任一轴与预测不一致时，整帧视觉数据都丢弃。 */
 static uint8_t vision_ekf_measurement_in_gate(const DartVisionAxisEkf_t *ekf,
                                               float pixel,
                                               float center,
@@ -369,7 +377,7 @@ static void vision_ekf_update(DartVisionAxisEkf_t *ekf,
 #endif
 
 #if DART_VISION_FILTER_MODE == DART_VISION_FILTER_RAW_RATE
-/* Keep the latest LOS angle unfiltered; only smooth its frame-to-frame rate. */
+/* 保留最新视线角不做滤波，只对帧间角速率做平滑。 */
 static void vision_raw_rate_update(DartVisionAxisEkf_t *state,
                                    float measured_angle,
                                    float inv_frame_dt,
@@ -424,14 +432,15 @@ static void update_vision_filter(float dt, uint32_t now_ms)
        焦距仍用图像半宽计算，不能跟着引导中心变化。 */
     float center_x = 0.0f;
     float center_y = 0.0f;
-    float focal = VisionFocalPx;
+    float focal_x = VisionFocalPxX;
+    float focal_y = VisionFocalPxY;
 
 #if DART_VISION_FILTER_MODE == DART_VISION_FILTER_EKF
     /* 先进行 EKF 预测 */
     vision_ekf_predict(&DartControl.vision_x_ekf, dt);
     vision_ekf_predict(&DartControl.vision_y_ekf, dt);
 #else
-    /* The raw-rate mode updates only when a new visual frame arrives. */
+    /* RAW_RATE 模式只在新视觉帧到达时更新。 */
     (void)dt;
 #endif
 
@@ -468,10 +477,10 @@ static void update_vision_filter(float dt, uint32_t now_ms)
             measurement_valid =
                 (vision_ekf_measurement_in_gate(&DartControl.vision_x_ekf,
                                                 (float)sample_x,
-                                                center_x, focal) &&
+                                                center_x, focal_x) &&
                  vision_ekf_measurement_in_gate(&DartControl.vision_y_ekf,
                                                 (float)sample_y,
-                                                center_y, focal)) ? 1U : 0U;
+                                                center_y, focal_y)) ? 1U : 0U;
         }
 #endif
 
@@ -480,12 +489,12 @@ static void update_vision_filter(float dt, uint32_t now_ms)
 #if DART_VISION_FILTER_MODE == DART_VISION_FILTER_EKF
             /* 两轴量测均有效，才更新 EKF 和目标有效时间戳。 */
             vision_ekf_update(&DartControl.vision_x_ekf,
-                              (float)sample_x, center_x, focal);
+                              (float)sample_x, center_x, focal_x);
             vision_ekf_update(&DartControl.vision_y_ekf,
-                              (float)sample_y, center_y, focal);
+                              (float)sample_y, center_y, focal_y);
 #else
-            /* Position follows the current frame directly. Only LOS rate is
-               lightly filtered to preserve the PN rate input. */
+            /* 位置直接跟随当前帧，只对视线角速率做轻量低通，
+               以保留前视追踪所需的速率分量。 */
             frame_dt_ms = sample_tick -
                           DartControl.telemetry.vision.last_target_ms;
             rate_valid =
@@ -505,8 +514,8 @@ static void update_vision_filter(float dt, uint32_t now_ms)
                              (DART_VISION_RATE_LPF_RC_S + frame_dt_s);
             }
 
-            measured_x_angle = atanf(((float)sample_x - center_x) / focal);
-            measured_y_angle = atanf(((float)sample_y - center_y) / focal);
+            measured_x_angle = atanf(((float)sample_x - center_x) / focal_x);
+            measured_y_angle = atanf(((float)sample_y - center_y) / focal_y);
             vision_raw_rate_update(&DartControl.vision_x_ekf,
                                    measured_x_angle,
                                    inv_frame_dt, rate_alpha, rate_valid);
@@ -542,20 +551,22 @@ static void update_vision_filter(float dt, uint32_t now_ms)
 #if DART_VISION_FILTER_MODE == DART_VISION_FILTER_EKF
         /* 将 EKF 角度转换为滤波后的像素坐标和视线角 */
         DartControl.telemetry.vision.filtered_x =
-            center_x + focal * tanf(DartControl.vision_x_ekf.angle);
+            center_x + focal_x * tanf(DartControl.vision_x_ekf.angle);
         DartControl.telemetry.vision.filtered_y =
-            center_y + focal * tanf(DartControl.vision_y_ekf.angle);
+            center_y + focal_y * tanf(DartControl.vision_y_ekf.angle);
 #else
-        /* RAW_RATE has no position filtering; avoid two software tanf calls. */
+        /* RAW_RATE 不做位置滤波，省去两次软件 tanf 调用。 */
         DartControl.telemetry.vision.filtered_x =
             (float)DartControl.telemetry.vision.raw_x;
         DartControl.telemetry.vision.filtered_y =
             (float)DartControl.telemetry.vision.raw_y;
 #endif
         DartControl.telemetry.vision.los_yaw_deg =
-            DART_CAMERA_YAW_SIGN * DartControl.vision_x_ekf.angle * DART_RAD_TO_DEG;
+            DART_CAMERA_YAW_SIGN * DartControl.vision_x_ekf.angle * DART_RAD_TO_DEG +
+            DART_CAMERA_YAW_BIAS_DEG;
         DartControl.telemetry.vision.los_pitch_deg =
-            DART_CAMERA_PITCH_SIGN * DartControl.vision_y_ekf.angle * DART_RAD_TO_DEG;
+            DART_CAMERA_PITCH_SIGN * DartControl.vision_y_ekf.angle * DART_RAD_TO_DEG +
+            DART_CAMERA_PITCH_BIAS_DEG;
 
         /* 目标保持有效：链路有效且目标未超时保持时间 */
         DartControl.telemetry.vision.valid =
@@ -647,6 +658,24 @@ static float calculate_roll_hold(const INS_t *ins)
                               DART_INS_ROLL_RATE_RAD_S(ins));
 }
 
+/* 前视追踪指令：视线角 + 前视时间 × 惯性系视线角速率。
+   前视项单独限幅并设速率死区，避免静止目标下把图像噪声放大成指令抖动。 */
+static float lead_pursuit_command(float los_deg, float los_rate_deg_s)
+{
+    float lead_deg = 0.0f;
+
+    if (fabsf(los_rate_deg_s) > DART_LEAD_RATE_DEADBAND_DEG_S)
+        lead_deg = DART_LEAD_TIME_S * los_rate_deg_s;
+
+    lead_deg = constrain_float(lead_deg,
+                               -DART_LEAD_MAX_DEG,
+                               DART_LEAD_MAX_DEG);
+
+    return constrain_float(los_deg + lead_deg,
+                           -DART_LEAD_COMMAND_LIMIT_DEG,
+                           DART_LEAD_COMMAND_LIMIT_DEG);
+}
+
 /* 上升段视觉 yaw 指令：视线角 + 前视修正，再按横滚投影到机体 yaw 轴。
    与下降段 yaw 引导使用同一套视觉量，但只取 yaw 分量，不参与 pitch。 */
 static float vision_yaw_command(const INS_t *ins)
@@ -659,19 +688,18 @@ static float vision_yaw_command(const INS_t *ins)
                       (DartControl.vision_x_ekf.rate +
                        DART_INS_YAW_RATE_RAD_S(ins)) * DART_RAD_TO_DEG;
     camera_yaw_rate = constrain_float(camera_yaw_rate,
-                                      -DART_PN_MAX_LOS_RATE_DEG_S,
-                                      DART_PN_MAX_LOS_RATE_DEG_S);
+                                      -DART_LOS_RATE_LIMIT_DEG_S,
+                                      DART_LOS_RATE_LIMIT_DEG_S);
 
-    camera_yaw_command = DartControl.telemetry.vision.los_yaw_deg +
-                         DART_PN_NAVIGATION_CONSTANT * camera_yaw_rate *
-                             DART_PN_LOOKAHEAD_S;
+    camera_yaw_command = lead_pursuit_command(
+        DartControl.telemetry.vision.los_yaw_deg, camera_yaw_rate);
 
     roll_rad = DART_INS_ROLL_DEG(ins) * DART_DEG_TO_RAD;
     camera_yaw_command = cosf(roll_rad) * camera_yaw_command;
 
     return constrain_float(camera_yaw_command,
-                           -DART_PN_MAX_COMMAND_DEG,
-                           DART_PN_MAX_COMMAND_DEG);
+                           -DART_LEAD_COMMAND_LIMIT_DEG,
+                           DART_LEAD_COMMAND_LIMIT_DEG);
 }
 
 /* 上升段姿态控制：
@@ -796,10 +824,10 @@ static void run_ascent_stabilization(const INS_t *ins)
 }
 
 /**
- * @brief 下降段引导：基于视觉和比例式引导生成俯仰/偏航指令
+ * @brief 下降段引导：基于视觉前视追踪生成俯仰/偏航指令
  * @param ins 惯性导航数据
  *
- * 使用视线角（LOS）和视线角速率，通过比例式引导（PN）计算期望姿态，
+ * 使用视线角（LOS）和惯性系视线角速率，按前视追踪（lead pursuit）计算期望姿态，
  * 再经当前横滚角进行坐标变换，最终由视觉 PID 参数转换为舵机输出。
  */
 static void run_descent_guidance(const INS_t *ins)
@@ -825,8 +853,8 @@ static void run_descent_guidance(const INS_t *ins)
 #if DART_DESCENT_LOCK_LAST_VISUAL_COMMAND_ENABLE
     if (!DartControl.telemetry.vision.valid)
 #else
-    /* With lock disabled, an explicit no-target frame releases immediately;
-       the existing timeout still protects against a missing UART frame. */
+    /* 关闭锁存时，收到明确的无目标帧就立即退出视觉引导；
+       原有超时逻辑仍可兜底串口帧丢失。 */
     if (!DartControl.telemetry.vision.valid ||
         !DartControl.telemetry.vision.recognized)
 #endif
@@ -837,8 +865,8 @@ static void run_descent_guidance(const INS_t *ins)
         if (DartControl.descent_target_seen &&
             (target_age_ms <= DART_TARGET_REACQUIRE_RESET_MS))
         {
-            /* Optional lock: keep the last relative visual command, but never
-               beyond the visual-state reacquisition timeout. */
+            /* 可选锁存：保持最后一次相对视觉指令，
+               但不超过视觉状态重捕获超时。 */
             DartControl.telemetry.yaw_output_us = 0.0f;
             if (DART_MODE != DART_MODE_PITCH)
                 DartControl.telemetry.yaw_output_us =
@@ -876,8 +904,7 @@ static void run_descent_guidance(const INS_t *ins)
             reset_pid(&DartControl.yaw_pid);
         DartControl.descent_target_seen = 0U;
 
-        /* Lock disabled or expired: discard the old visual command and use
-           launch-yaw hold with neutral pitch. */
+        /* 锁存关闭或已超时：丢弃旧视觉指令，改为保持起飞偏航、俯仰回中。 */
         DartControl.telemetry.target_yaw_deg = 0.0f;
         DartControl.telemetry.target_pitch_deg = 0.0f;
         DartControl.telemetry.yaw_output_us = calculate_yaw_hold(ins);
@@ -903,25 +930,22 @@ static void run_descent_guidance(const INS_t *ins)
     camera_yaw_rate = DART_CAMERA_YAW_SIGN *
                       (DartControl.vision_x_ekf.rate +
                        DART_INS_YAW_RATE_RAD_S(ins)) * DART_RAD_TO_DEG;
-    /* Pixel rate uses the camera Y axis; body pitch rate has the opposite
-       sign after the pitch convention change. */
+    /* 像素速率取相机 Y 轴；俯仰约定取反后，机体俯仰角速率与之符号相反。 */
     camera_pitch_rate = DART_CAMERA_PITCH_SIGN *
                         (DartControl.vision_y_ekf.rate -
                          DART_INS_PITCH_RATE_RAD_S(ins)) * DART_RAD_TO_DEG;
     camera_yaw_rate = constrain_float(camera_yaw_rate,
-                                      -DART_PN_MAX_LOS_RATE_DEG_S,
-                                      DART_PN_MAX_LOS_RATE_DEG_S);
+                                      -DART_LOS_RATE_LIMIT_DEG_S,
+                                      DART_LOS_RATE_LIMIT_DEG_S);
     camera_pitch_rate = constrain_float(camera_pitch_rate,
-                                        -DART_PN_MAX_LOS_RATE_DEG_S,
-                                        DART_PN_MAX_LOS_RATE_DEG_S);
+                                        -DART_LOS_RATE_LIMIT_DEG_S,
+                                        DART_LOS_RATE_LIMIT_DEG_S);
 
-    /* 比例式引导：指令 = 视线角 + N * 视线角速率 * 前视时间 */
-    camera_yaw_command = DartControl.telemetry.vision.los_yaw_deg +
-                         DART_PN_NAVIGATION_CONSTANT * camera_yaw_rate *
-                             DART_PN_LOOKAHEAD_S;
-    camera_pitch_command = DartControl.telemetry.vision.los_pitch_deg +
-                           DART_PN_NAVIGATION_CONSTANT * camera_pitch_rate *
-                               DART_PN_LOOKAHEAD_S;
+    /* 前视追踪：指令 = 视线角 + 前视时间 × 视线角速率（前视项已在函数内限幅） */
+    camera_yaw_command = lead_pursuit_command(
+        DartControl.telemetry.vision.los_yaw_deg, camera_yaw_rate);
+    camera_pitch_command = lead_pursuit_command(
+        DartControl.telemetry.vision.los_pitch_deg, camera_pitch_rate);
 
     /* 根据当前横滚角将相机平面指令旋转到机体俯仰/偏航 */
     roll_rad = DART_INS_ROLL_DEG(ins) * DART_DEG_TO_RAD;
@@ -930,11 +954,11 @@ static void run_descent_guidance(const INS_t *ins)
     yaw_command = cos_roll * camera_yaw_command + sin_roll * camera_pitch_command;
     pitch_command = -sin_roll * camera_yaw_command + cos_roll * camera_pitch_command;
     yaw_command = constrain_float(yaw_command,
-                                  -DART_PN_MAX_COMMAND_DEG,
-                                  DART_PN_MAX_COMMAND_DEG);
+                                  -DART_LEAD_COMMAND_LIMIT_DEG,
+                                  DART_LEAD_COMMAND_LIMIT_DEG);
     pitch_command = constrain_float(pitch_command,
-                                    -DART_PN_MAX_COMMAND_DEG,
-                                    DART_PN_MAX_COMMAND_DEG);
+                                    -DART_LEAD_COMMAND_LIMIT_DEG,
+                                    DART_LEAD_COMMAND_LIMIT_DEG);
 
     /* 下位机模式：pitch/yaw 单轴时另一轴复位并输出 0；both/default 两轴 */
     if (DART_MODE == DART_MODE_PITCH)
@@ -952,7 +976,7 @@ static void run_descent_guidance(const INS_t *ins)
     DartControl.telemetry.target_yaw_deg = yaw_command;
     DartControl.telemetry.target_pitch_deg = pitch_command;
     DartControl.telemetry.output_yaw_deg = yaw_command;
-    /* OP reports the pitch command after the descent direction correction. */
+    /* 遥测里的 OP 是经过下降段方向修正后的俯仰指令。 */
     DartControl.telemetry.output_pitch_deg =
         DART_DESCENT_PITCH_OUTPUT_SIGN * pitch_command;
 
@@ -970,6 +994,85 @@ static void run_descent_guidance(const INS_t *ins)
             DART_DESCENT_PITCH_OUTPUT_SIGN *
             calculate_axis_pid(&DartControl.pitch_vision_pid, pitch_command,
                                DART_INS_PITCH_RATE_RAD_S(ins));
+    write_servo_outputs(DartControl.telemetry.pitch_output_us,
+                        DartControl.telemetry.yaw_output_us,
+                        DartControl.telemetry.roll_output_us);
+}
+
+/* 调试模式引导：与下降段同一套前视追踪，只计算指令，不驱动舵机。 */
+static void run_debug_guidance(const INS_t *ins)
+{
+    float camera_yaw_rate = 0.0f;
+    float camera_pitch_rate = 0.0f;
+    float camera_yaw_command = 0.0f;
+    float camera_pitch_command = 0.0f;
+    float roll_rad;
+    float cos_roll;
+    float sin_roll;
+    float yaw_command;
+    float pitch_command;
+
+    if (DartControl.telemetry.vision.valid)
+    {
+        camera_yaw_rate = DART_CAMERA_YAW_SIGN *
+                          (DartControl.vision_x_ekf.rate +
+                           DART_INS_YAW_RATE_RAD_S(ins)) * DART_RAD_TO_DEG;
+        camera_pitch_rate = DART_CAMERA_PITCH_SIGN *
+                            (DartControl.vision_y_ekf.rate -
+                             DART_INS_PITCH_RATE_RAD_S(ins)) * DART_RAD_TO_DEG;
+        camera_yaw_rate = constrain_float(camera_yaw_rate,
+                                          -DART_LOS_RATE_LIMIT_DEG_S,
+                                          DART_LOS_RATE_LIMIT_DEG_S);
+        camera_pitch_rate = constrain_float(camera_pitch_rate,
+                                            -DART_LOS_RATE_LIMIT_DEG_S,
+                                            DART_LOS_RATE_LIMIT_DEG_S);
+
+        camera_yaw_command = lead_pursuit_command(
+            DartControl.telemetry.vision.los_yaw_deg, camera_yaw_rate);
+        camera_pitch_command = lead_pursuit_command(
+            DartControl.telemetry.vision.los_pitch_deg, camera_pitch_rate);
+    }
+
+    roll_rad = DART_INS_ROLL_DEG(ins) * DART_DEG_TO_RAD;
+    cos_roll = cosf(roll_rad);
+    sin_roll = sinf(roll_rad);
+    yaw_command = cos_roll * camera_yaw_command + sin_roll * camera_pitch_command;
+    pitch_command = -sin_roll * camera_yaw_command + cos_roll * camera_pitch_command;
+    yaw_command = constrain_float(yaw_command,
+                                  -DART_LEAD_COMMAND_LIMIT_DEG,
+                                  DART_LEAD_COMMAND_LIMIT_DEG);
+    pitch_command = constrain_float(pitch_command,
+                                    -DART_LEAD_COMMAND_LIMIT_DEG,
+                                    DART_LEAD_COMMAND_LIMIT_DEG);
+
+    DartControl.telemetry.target_yaw_deg = yaw_command;
+    DartControl.telemetry.target_pitch_deg = pitch_command;
+    DartControl.telemetry.output_yaw_deg = yaw_command;
+    DartControl.telemetry.output_pitch_deg =
+        DART_DESCENT_PITCH_OUTPUT_SIGN * pitch_command;
+    DartControl.telemetry.output_roll_deg = DART_INS_ROLL_DEG(ins);
+    DartControl.telemetry.output_valid = 1U;
+    DartControl.telemetry.roll_output_us = 0.0f;
+
+    if (DartControl.telemetry.vision.valid)
+    {
+        DartControl.telemetry.yaw_output_us =
+            DART_DESCENT_YAW_OUTPUT_SIGN *
+            calculate_axis_pid(&DartControl.yaw_vision_pid, yaw_command,
+                               DART_INS_YAW_RATE_RAD_S(ins));
+        DartControl.telemetry.pitch_output_us =
+            DART_DESCENT_PITCH_OUTPUT_SIGN *
+            calculate_axis_pid(&DartControl.pitch_vision_pid, pitch_command,
+                               DART_INS_PITCH_RATE_RAD_S(ins));
+    }
+    else
+    {
+        DartControl.telemetry.yaw_output_us = 0.0f;
+        DartControl.telemetry.pitch_output_us = 0.0f;
+        reset_pid(&DartControl.yaw_vision_pid);
+        reset_pid(&DartControl.pitch_vision_pid);
+    }
+
     write_servo_outputs(DartControl.telemetry.pitch_output_us,
                         DartControl.telemetry.yaw_output_us,
                         DartControl.telemetry.roll_output_us);
@@ -1029,6 +1132,13 @@ void attitude_telemetry_send(void)
     int16_t output_pitch_raw;
     int16_t output_yaw_raw;
     int16_t output_roll_raw;
+    int16_t los_yaw_raw;
+    int16_t los_pitch_raw;
+    int16_t servo_raw[4];
+    float los_yaw_deg_out;
+    float los_pitch_deg_out;
+    uint8_t dbg_flags;
+    uint8_t i;
     uint8_t output_valid;
     uint32_t primask;
     static uint8_t tx_frame[DART_ATT_FRAME_LEN];
@@ -1038,7 +1148,7 @@ void attitude_telemetry_send(void)
         return;
     if (!DartControl.imu_ready)
         return;
-    /* HAL_UART_Transmit_IT uses this static buffer until Tx completes. */
+    /* HAL_UART_Transmit_IT 在发送完成前一直使用这块静态缓冲。 */
     if (huart1.gState != HAL_UART_STATE_READY)
         return;
 
@@ -1058,6 +1168,22 @@ void attitude_telemetry_send(void)
     if (primask == 0U)
         __enable_irq();
 
+    /* LOS 增量：相对上电 1 s 参考角；舵机角按 1550 us = 0 度换算。 */
+    if (debug_ref_valid)
+    {
+        los_yaw_deg_out = wrap_180(yaw_deg - debug_ref_yaw_deg) +
+                          DartControl.telemetry.vision.los_yaw_deg;
+        los_pitch_deg_out = (pitch_deg - debug_ref_pitch_deg) +
+                            DartControl.telemetry.vision.los_pitch_deg;
+        dbg_flags = DART_DBG_FLAG_REF_VALID;
+    }
+    else
+    {
+        los_yaw_deg_out = 0.0f;
+        los_pitch_deg_out = 0.0f;
+        dbg_flags = 0U;
+    }
+
     pitch_raw = (int16_t)(pitch_deg * DART_ATT_ANGLE_SCALE);
     yaw_raw = (int16_t)(yaw_deg * DART_ATT_ANGLE_SCALE);
     roll_raw = (int16_t)(roll_deg * DART_ATT_ANGLE_SCALE);
@@ -1067,6 +1193,13 @@ void attitude_telemetry_send(void)
     output_pitch_raw = (int16_t)(output_pitch_deg * DART_ATT_ANGLE_SCALE);
     output_yaw_raw = (int16_t)(output_yaw_deg * DART_ATT_ANGLE_SCALE);
     output_roll_raw = (int16_t)(output_roll_deg * DART_ATT_ANGLE_SCALE);
+    los_yaw_raw = (int16_t)(los_yaw_deg_out * DART_ATT_LOS_SCALE);
+    los_pitch_raw = (int16_t)(los_pitch_deg_out * DART_ATT_LOS_SCALE);
+    for (i = 0U; i < 4U; i++)
+        servo_raw[i] = (int16_t)((DartControl.telemetry.servo_us[i] -
+                                  (float)DART_SERVO_CENTER_US) *
+                                 DART_ATT_SERVO_DEG_PER_US *
+                                 DART_ATT_SERVO_SCALE);
 
     tx_frame[DART_ATT_SOF_INDEX] = DART_ATT_SOF;
     tx_frame[DART_ATT_GYRO_X_H_INDEX] = (uint8_t)((uint16_t)gyro_x_raw >> 8U);
@@ -1098,11 +1231,24 @@ void attitude_telemetry_send(void)
         (DartControl.imu_ready ? DART_ATT_FLAG_IMU_READY : 0U) |
         (DartControl.attitude_tx_armed ? DART_ATT_FLAG_HANDSHAKE_DONE : 0U) |
         (output_valid ? DART_ATT_FLAG_OUTPUT_VALID : 0U));
+    tx_frame[DART_ATT_LOS_YAW_H_INDEX] = (uint8_t)((uint16_t)los_yaw_raw >> 8U);
+    tx_frame[DART_ATT_LOS_YAW_L_INDEX] = (uint8_t)los_yaw_raw;
+    tx_frame[DART_ATT_LOS_PITCH_H_INDEX] = (uint8_t)((uint16_t)los_pitch_raw >> 8U);
+    tx_frame[DART_ATT_LOS_PITCH_L_INDEX] = (uint8_t)los_pitch_raw;
+    tx_frame[DART_ATT_SERVO1_H_INDEX] = (uint8_t)((uint16_t)servo_raw[0] >> 8U);
+    tx_frame[DART_ATT_SERVO1_L_INDEX] = (uint8_t)servo_raw[0];
+    tx_frame[DART_ATT_SERVO2_H_INDEX] = (uint8_t)((uint16_t)servo_raw[1] >> 8U);
+    tx_frame[DART_ATT_SERVO2_L_INDEX] = (uint8_t)servo_raw[1];
+    tx_frame[DART_ATT_SERVO3_H_INDEX] = (uint8_t)((uint16_t)servo_raw[2] >> 8U);
+    tx_frame[DART_ATT_SERVO3_L_INDEX] = (uint8_t)servo_raw[2];
+    tx_frame[DART_ATT_SERVO4_H_INDEX] = (uint8_t)((uint16_t)servo_raw[3] >> 8U);
+    tx_frame[DART_ATT_SERVO4_L_INDEX] = (uint8_t)servo_raw[3];
+    tx_frame[DART_ATT_DBG_FLAGS_INDEX] = dbg_flags;
     tx_frame[DART_ATT_EOF_INDEX] = DART_ATT_EOF;
     tx_frame[DART_ATT_CRC_INDEX] =
         vision_crc8(tx_frame, DART_ATT_CRC_INDEX);
 
-    /* 24 字节在低优先级任务里阻塞发送会被高优先级任务抢占并超时，
+    /* 37 字节在低优先级任务里阻塞发送会被高优先级任务抢占并超时，
        改由 USART1 中断连续发送；gState 忙时跳过本帧。 */
     (void)HAL_UART_Transmit_IT(&huart1, tx_frame, DART_ATT_FRAME_LEN);
 }
@@ -1185,8 +1331,8 @@ void control_Init(void)
     if (primask == 0U)
         __enable_irq();
 
-    VisionFocalPx = (DART_IMAGE_WIDTH_PX * 0.5f) /
-                    tanf(0.5f * DART_CAMERA_HFOV_DEG * DART_DEG_TO_RAD);
+    VisionFocalPxX = DART_CAMERA_FOCAL_X_PX;
+    VisionFocalPxY = DART_CAMERA_FOCAL_Y_PX;
 
     /* 舵机遥测初始化为中位 */
     for (i = 0U; i < 4U; i++)
@@ -1290,6 +1436,27 @@ void control_Task(void)
     if (primask == 0U)
         __enable_irq();
 
+    /* 上电静止参考角：IMU 就绪 1 s 后采样一次，调试模式的 LOS 增量以此为零点。 */
+    if (!debug_ref_valid &&
+        ((now_ms - debug_imu_ready_ms) >= DART_DEBUG_REF_DELAY_MS))
+    {
+        debug_ref_yaw_deg = ins_snapshot.Yaw;
+        debug_ref_pitch_deg = DART_INS_PITCH_DEG(&ins_snapshot);
+        debug_ref_valid = 1U;
+    }
+
+    /* 调试模式：不做起飞检测、不驱动舵机，只运行视觉引导并上报。 */
+    if (DART_MODE == DART_MODE_DEBUG)
+    {
+        if (DartControl.flight_state != DART_STATE_DEBUG)
+        {
+            reset_all_control_pids();
+            set_state(DART_STATE_DEBUG);
+        }
+        run_debug_guidance(&ins_snapshot);
+        return;
+    }
+
     /* 状态：SERVO_READY —— 检测起飞加速度，确认起飞 */
     if (DartControl.flight_state == DART_STATE_SERVO_READY)
     {
@@ -1306,7 +1473,7 @@ void control_Task(void)
 
         if (DartControl.launch_confirm_count >= DART_LAUNCH_CONFIRM_COUNT)
         {
-            /* Seed yaw/roll references now so all three axes control this cycle. */
+            /* 先播种偏航/横滚参考角，保证本周期三轴都参与控制。 */
             reset_all_control_pids();
             DartControl.attitude_sample_count = 0U;
             DartControl.yaw_sin_sum = 0.0f;
@@ -1389,6 +1556,8 @@ void control_Task(void)
  */
 void control_notify_imu_ready(uint8_t ready)
 {
+    if (ready && !DartControl.imu_ready)
+        debug_imu_ready_ms = HAL_GetTick();
     DartControl.imu_ready = ready ? 1U : 0U;
 }
 
@@ -1556,6 +1725,13 @@ void led_Task(void)
         break;
     case DART_STATE_DESCENT:
         led_write(1U, 0U, 1U);          /* 紫：下降段 */
+        break;
+    case DART_STATE_DEBUG:
+        /* 调试模式：蓝绿闪烁，提示未发射、舵机不输出 */
+        if (((HAL_GetTick() / DART_LED_ERROR_BLINK_HALF_PERIOD_MS) & 0x01U) != 0U)
+            led_write(0U, 1U, 1U);
+        else
+            led_write(0U, 0U, 0U);
         break;
     case DART_STATE_VISION_ERROR:
         /* 视觉错误：白色闪烁 */

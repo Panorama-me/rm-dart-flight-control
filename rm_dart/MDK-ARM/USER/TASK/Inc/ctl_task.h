@@ -18,12 +18,12 @@ extern "C" {
 #include "main.h"
 #include "controller.h"
 
-/* ----------------------------- Math constants ---------------------------- */
+/* ------------------------------ 数学常量 ------------------------------- */
 /* 数学常量：角度与弧度互转 */
 #define DART_DEG_TO_RAD                     0.01745329251994329577f  /* 度 -> 弧度 */
 #define DART_RAD_TO_DEG                    57.295779513082320876f   /* 弧度 -> 度 */
 
-/* --------------------------- Board configuration ------------------------- */
+/* ------------------------------ 板级配置 ------------------------------- */
 /* 板级硬件配置 */
 #define DART_LED_GPIO_PORT                  GPIOA                   /* RGB LED 所在 GPIO 端口 */
 #define DART_LED_RED_PIN                    GPIO_PIN_4              /* 红色 LED 引脚 */
@@ -36,7 +36,7 @@ extern "C" {
 #define DART_SERVO_MAX_US                   2550U                   /* 舵机最大脉宽（微秒） */
 #define DART_SERVO_MAX_STEP_US                30U                   /* 单周期舵机脉宽最大变化量（微秒），保护舵机 */
 
-/* -------------------------- Vision UART protocol ------------------------- */
+/* ---------------------------- 视觉 UART 协议 --------------------------- */
 /* 视觉 UART 通信协议 */
 /* 帧格式：AA xH xL yH yL recognized FF CRC8。CRC 覆盖字节 0..6。
    x/y 为相对引导中心（ROI 中心）的有符号像素偏移，int16 大端，
@@ -55,15 +55,20 @@ extern "C" {
 #define DART_VISION_CRC8_INIT               0x00U                   /* CRC8 初始值 */
 #define DART_VISION_CRC8_POLY               0x8CU                   /* CRC8 多项式 */
 
-/* ------------------------ Attitude telemetry protocol -------------------- */
+/* ---------------------------- 姿态遥测协议 ----------------------------- */
 /* 姿态遥测 UART 协议（F103 -> OpenMV），帧格式：
    55
       gyroXH gyroXL gyroYH gyroYL gyroZH gyroZL
       pitchH pitchL yawH yawL rollH rollL
       outPitchH outPitchL outYawH outYawL outRollH outRollL
-      mode state flags FE CRC8
-   gyro 单位 0.1 deg/s，角度单位 0.01 deg；CRC 覆盖字节 0..22。 */
-#define DART_ATT_FRAME_LEN                    24U
+      mode state flags
+      losYawH losYawL losPitchH losPitchL
+      servo1H servo1L servo2H servo2L servo3H servo3L servo4H servo4L
+      dbgFlags FE CRC8
+   gyro 单位 0.1 deg/s，角度单位 0.01 deg；
+   LOS 为相对上电 1 s 参考角的增量（0.01 deg），舵机角 0.1 deg；
+   CRC 覆盖字节 0..35。 */
+#define DART_ATT_FRAME_LEN                    37U
 #define DART_ATT_SOF_INDEX                     0U
 #define DART_ATT_GYRO_X_H_INDEX                1U
 #define DART_ATT_GYRO_X_L_INDEX                2U
@@ -86,12 +91,29 @@ extern "C" {
 #define DART_ATT_MODE_INDEX                   19U
 #define DART_ATT_STATE_INDEX                  20U
 #define DART_ATT_FLAGS_INDEX                  21U
-#define DART_ATT_EOF_INDEX                    22U
-#define DART_ATT_CRC_INDEX                    23U
+#define DART_ATT_LOS_YAW_H_INDEX              22U
+#define DART_ATT_LOS_YAW_L_INDEX              23U
+#define DART_ATT_LOS_PITCH_H_INDEX            24U
+#define DART_ATT_LOS_PITCH_L_INDEX            25U
+#define DART_ATT_SERVO1_H_INDEX               26U
+#define DART_ATT_SERVO1_L_INDEX               27U
+#define DART_ATT_SERVO2_H_INDEX               28U
+#define DART_ATT_SERVO2_L_INDEX               29U
+#define DART_ATT_SERVO3_H_INDEX               30U
+#define DART_ATT_SERVO3_L_INDEX               31U
+#define DART_ATT_SERVO4_H_INDEX               32U
+#define DART_ATT_SERVO4_L_INDEX               33U
+#define DART_ATT_DBG_FLAGS_INDEX              34U
+#define DART_ATT_EOF_INDEX                    35U
+#define DART_ATT_CRC_INDEX                    36U
 #define DART_ATT_SOF                        0x55U
 #define DART_ATT_EOF                        0xFEU
 #define DART_ATT_ANGLE_SCALE               100.0f
 #define DART_ATT_GYRO_SCALE                 10.0f
+#define DART_ATT_LOS_SCALE                 100.0f   /* LOS 增量 0.01 度 */
+#define DART_ATT_SERVO_SCALE                10.0f   /* 舵机角 0.1 度 */
+#define DART_ATT_SERVO_DEG_PER_US           0.09f   /* 1550 us = 0 度，±1000 us = ±90 度 */
+#define DART_DBG_FLAG_REF_VALID             0x01U   /* 调试标志 bit0：上电参考角已捕获 */
 #define DART_ATT_FLAG_LINK_VALID            0x01U
 #define DART_ATT_FLAG_TARGET_VALID          0x02U
 #define DART_ATT_FLAG_IMU_READY             0x04U
@@ -99,7 +121,7 @@ extern "C" {
 #define DART_ATT_FLAG_OUTPUT_VALID          0x10U
 #define DART_ATT_TX_TIMEOUT_MS                 5U
 
-/* ------------------------ Handshake / mode protocol ---------------------- */
+/* ------------------------- 握手 / 模式协议 ----------------------------- */
 /* F103 -> OpenMV 握手帧：A5 MODE FLAGS FE CRC8（5 字节）。
    OpenMV -> F103 ACK：5A MODE FE CRC8（4 字节）。
    握手成功（收到 ACK）后 F103 才开始发送姿态遥测。 */
@@ -118,19 +140,34 @@ extern "C" {
 #define DART_MODE_PITCH                       1U
 #define DART_MODE_YAW                         2U
 #define DART_MODE_BOTH                        3U
-#define DART_MODE                            DART_MODE_BOTH
+#define DART_MODE_DEBUG                       4U
+/* 编译期选择工作模式；台架调试时改成 DART_MODE_DEBUG：
+   不检测起飞、不驱动舵机，只识别目标并计算/上报视觉指令。 */
+#define DART_MODE                            DART_MODE_DEBUG
 
 #define DART_IMAGE_WIDTH_PX                  320.0f    /* OpenMV 输出 QVGA，宽度 320 */
 #define DART_IMAGE_HEIGHT_PX                 240.0f    /* OpenMV 输出 QVGA，高度 240 */
-#define DART_CAMERA_HFOV_DEG                  68.0f                 /* 相机水平视场角（度） */
+/* 视觉焦距（像素），x/y 两轴分开标定。
+   x：暂用 640x480 读出窗口的几何值 961 px，待转台标定后修正；
+   y：纵向 240 px 实测约 44.6 度，f = 120 / tan(22.3 度) 约 292.6 px。
+   两轴焦距不一致时，roll 旋转后的指令会出现各向异性（见 9.x 说明）；
+   若 x 轴实测纵向跨度同样是 44.6 度，应把 x 也改成 292.6。 */
+#define DART_CAMERA_FOCAL_X_PX               961.0f
+#define DART_CAMERA_FOCAL_Y_PX               292.6f
+/* 相机安装角与读出窗口偏移造成的固定视线偏置（度），默认 0。
+   当前 640x480 窗口在垂直方向相对光轴偏移约 20 度；
+   若机身轴对准目标时图像不在 (160,120)，把实测偏置填到这里。 */
+#define DART_CAMERA_YAW_BIAS_DEG               0.0f
+#define DART_CAMERA_PITCH_BIAS_DEG             0.0f
 #define DART_VISION_LINK_TIMEOUT_MS           250U                  /* 视觉链路超时时间（毫秒） */
 #define DART_VISION_STARTUP_GRACE_MS         1000U                  /* 启动宽限期，期间不报链路错误（毫秒） */
 #define DART_TARGET_LOST_HOLD_MS              120U                  /* 目标丢失后保持有效的时间（毫秒） */
 #define DART_TARGET_REACQUIRE_RESET_MS        500U                  /* 目标丢失超过此时间后复位 EKF 重新捕获（毫秒） */
+#define DART_DEBUG_REF_DELAY_MS              1000U                  /* IMU 就绪后采上电参考角的延时（毫秒） */
 #define DART_ENABLE_PRELAUNCH_LINK_ERROR_LED    1U                  /* 使能起飞前视觉链路错误 LED 指示 */
 
-/* 1: keep the last descent visual command for at most
-   DART_TARGET_REACQUIRE_RESET_MS; 0: fall back after vision.valid clears. */
+/* 1：目标丢失后最多保持下降段最后一次视觉指令 DART_TARGET_REACQUIRE_RESET_MS 毫秒；
+   0：vision.valid 清零后立即退出视觉引导。 */
 #ifndef DART_DESCENT_LOCK_LAST_VISUAL_COMMAND_ENABLE
 #define DART_DESCENT_LOCK_LAST_VISUAL_COMMAND_ENABLE 1U
 #endif
@@ -140,14 +177,13 @@ extern "C" {
 #error "DART_DESCENT_LOCK_LAST_VISUAL_COMMAND_ENABLE must be 0 or 1"
 #endif
 
-/* Vision EKF tuning. */
-/* 视觉扩展卡尔曼滤波器调参 */
+/* 视觉 EKF 调参 */
 #define DART_VISION_EKF_PROCESS_NOISE          5.0f                 /* 过程噪声强度 */
 #define DART_VISION_EKF_MEAS_NOISE_PX          9.0f                 /* 测量噪声方差（像素平方） */
 #define DART_VISION_EKF_GATE_PX              180.0f                 /* 创新量限幅门限（像素） */
 
-/* The original visual EKF remains in Control_Task.c and can be restored by
-   changing this compile-time mode. RAW_RATE applies no position filtering. */
+/* 原视觉 EKF 仍保留在 Control_Task.c 中，修改本编译期开关即可恢复；
+   RAW_RATE 模式不对位置滤波，只对视线角速率做轻量低通。 */
 #define DART_VISION_FILTER_EKF                  1U
 #define DART_VISION_FILTER_RAW_RATE             0U
 #ifndef DART_VISION_FILTER_MODE
@@ -163,7 +199,7 @@ extern "C" {
 #error "Invalid DART_VISION_FILTER_MODE"
 #endif
 
-/* ---------------------------- Flight detection --------------------------- */
+/* ------------------------------ 飞行检测 ------------------------------- */
 /* 飞行检测与状态机参数 */
 #define DART_CONTROL_PERIOD_MS                  2U                  /* 标称控制周期（毫秒） */
 #define DART_MAX_CONTROL_DT_MS                 20U                  /* 控制周期最大允许值，防止 dt 过大（毫秒） */
@@ -181,12 +217,14 @@ extern "C" {
 #define DART_MIN_ASCENT_TIME_MS                 300U                 /* 上升段最短持续时间（毫秒） */
 #define DART_LED_ERROR_BLINK_HALF_PERIOD_MS     200U                 /* 错误闪烁半周期（毫秒） */
 
-/* ----------------------- Proportional-navigation tuning ------------------ */
-/* 比例式引导调参：指令 = 视线角 + N * 视线角速率 * 前视时间 */
-#define DART_PN_NAVIGATION_CONSTANT       0.5f    /* 3.0 -> 1.5，降低 rate 放大 */
-#define DART_PN_LOOKAHEAD_S               0.05f   /* 0.10 -> 0.05，减少超前量 */
-#define DART_PN_MAX_LOS_RATE_DEG_S       30.0f    /* 180 -> 60，限制 rate 峰值 */
-#define DART_PN_MAX_COMMAND_DEG          20.0f    /* 35 -> 20，限制指令幅度 */
+/* ------------------------ 前视追踪（lead pursuit）调参 ------------------- */
+/* 指令 = 视线角 + 前视时间 × 惯性系视线角速率。
+   目标静止时前视项只补偿本机转弯与舵机滞后，不承担“导航比”的作用。 */
+#define DART_LEAD_TIME_S                  0.15f   /* 前视时间（秒），按控制滞后取 0.1-0.3 s */
+#define DART_LEAD_MAX_DEG                  5.0f   /* 前视项单独限幅（度），防止把目标推出视场 */
+#define DART_LEAD_RATE_DEADBAND_DEG_S      2.0f   /* 视线角速率死区（度/秒），抑制画面噪声引起的抖动 */
+#define DART_LOS_RATE_LIMIT_DEG_S         30.0f   /* 视线角速率限幅（度/秒） */
+#define DART_LEAD_COMMAND_LIMIT_DEG       20.0f   /* 总指令限幅（度），应小于半视场 */
 
 /* 下降段引导输出反向力矩：只影响 DESCENT 的 pitch/yaw PID 输出 */
 #define DART_DESCENT_YAW_OUTPUT_SIGN     (-1.0f)
@@ -197,8 +235,7 @@ extern "C" {
    实机上若 yaw 朝目标反方向转，优先单独修改这里。 */
 #define DART_ASCENT_VISION_YAW_OUTPUT_SIGN (-1.0f)
 
-/* ------------------------------- PID tuning ------------------------------ */
-/* PID 调参 */
+/* -------------------------------- PID 调参 ----------------------------- */
 #define DART_PID_MAX_OUTPUT_US                  420.0f               /* PID 输出限幅（微秒） */
 #define DART_PID_INTEGRAL_LIMIT_US              120.0f               /* 积分项限幅（微秒） */
 #define DART_PID_DEADBAND_DEG                     0.20f              /* 死区（度） */
@@ -206,12 +243,12 @@ extern "C" {
 #define DART_PID_CHANGING_B                       2.0f               /* 积分分离参数 B */
 #define DART_PID_OUTPUT_LPF_RC                    0.01f              /* 输出低通滤波时间常数 */
 #define DART_PID_DERIVATIVE_LPF_RC                0.01f              /* 微分低通滤波时间常数 */
-#define DART_PID_OLS_ORDER                        0U  /* Gyro rate replaces error differentiation. */
+#define DART_PID_OLS_ORDER                        0U  /* 用陀螺角速率代替误差微分 */
 #define DART_PID_IMPROVE_FLAGS  (Integral_Limit | Trapezoid_Intergral | \
                                  DerivativeFilter | OutputFilter)      /* PID 改进标志位 */
 #define DART_YAW_KP                              5.0f               /* 偏航 PID 比例系数 */
 #define DART_YAW_KI                               0.01f               /* 偏航 PID 积分系数 */
-/* Kd uses servo microseconds per deg/s; verify the sign on the airframe. */
+/* Kd 的单位是“微秒 /（度/秒）”，符号需在实机上确认。 */
 #define DART_YAW_KD                               0.5f              /* 偏航 PID 微分系数 */
 #define DART_PITCH_KP                            10.0f               /* 俯仰 PID 比例系数 */
 #define DART_PITCH_KI                             0.05f               /* 俯仰 PID 积分系数 */
@@ -220,7 +257,7 @@ extern "C" {
 #define DART_ROLL_KI                              0.01f               /* 横滚 PID 积分系数 */
 #define DART_ROLL_KD                              1.0f              /* 横滚 PID 微分系数 */
 
-/* Pitch/yaw use independent PID parameter sets for stabilization and vision. */
+/* 俯仰/偏航在自稳与视觉两种工况下各用一组独立的 PID 参数。 */
 #define DART_YAW_STAB_KP                         DART_YAW_KP
 #define DART_YAW_STAB_KI                         DART_YAW_KI
 #define DART_YAW_STAB_KD                         DART_YAW_KD
@@ -228,6 +265,9 @@ extern "C" {
 #define DART_PITCH_STAB_KI                       DART_PITCH_KI
 #define DART_PITCH_STAB_KD                       DART_PITCH_KD
 
+/* 视觉 PID 的输入是角度误差（度）。焦距从 237 px 改成 961 px 后，
+   同样的像素偏移对应的角度约为原来的 1/4，视觉回路等效增益随之降低；
+   首次上板若跟踪偏慢，优先按比例增大 DART_*_VISION_KP。 */
 #define DART_YAW_VISION_KP                       5.0f
 #define DART_YAW_VISION_KI                       0.1f
 #define DART_YAW_VISION_KD                       0.5f
@@ -242,7 +282,7 @@ extern "C" {
 #define DART_ASCENT_ROLL_COMPENSATION_ENABLE    0U      /* 1: 启用 roll 初始补偿，0: 走 roll 自稳 */
 #define DART_ASCENT_ROLL_TARGET_DEG             0.0f    /* roll 补偿目标角（度） */
 #define DART_ASCENT_ROLL_LIFT_US                100.0f  /* roll 固定抬升输出（微秒），符号需实机确认 */
-/* --------------------------- Axis calibration ---------------------------- */
+/* ------------------------------ 轴向校准 ------------------------------- */
 /* 轴向校准：符号与坐标映射 */
 #define DART_LAUNCH_X_SIGN                        1.0f               /* 起飞加速度 X 轴符号 */
 #define DART_CAMERA_YAW_SIGN                      1.0f               /* 相机偏航角符号 */
@@ -251,8 +291,6 @@ extern "C" {
 #define DART_PITCH_OUTPUT_SIGN                     1.0f               /* 坐标取反后保持原舵机方向 */
 #define DART_YAW_OUTPUT_SIGN                      -1.0f               /* 偏航输出符号 */
 
-/* QuaternionEKF labels pitch/roll opposite to this airframe. Map once here.
-   Yaw remains gyro Z. Pitch rate is gyro Y and roll rate is gyro X. */
 /* 四元数 EKF 的俯仰/横滚定义与本机架相反，在此统一映射。
    偏航仍为陀螺 Z 轴，俯仰角速率为陀螺 Y 轴，横滚角速率为陀螺 X 轴。 */
 #define DART_SWAP_INS_PITCH_ROLL                    1U               /* 是否交换 INS 俯仰与横滚 */
@@ -278,7 +316,8 @@ typedef enum
     DART_STATE_LAUNCHED,        /* 已起飞：采集起飞姿态 */
     DART_STATE_ASCENT,          /* 上升段：保持起飞姿态稳定 */
     DART_STATE_DESCENT,         /* 下降段：视觉引导 */
-    DART_STATE_VISION_ERROR     /* 视觉错误：起飞前链路异常指示 */
+    DART_STATE_VISION_ERROR,    /* 视觉错误：起飞前链路异常指示 */
+    DART_STATE_DEBUG            /* 调试：未发射，识别目标并计算指令，不驱动舵机 */
 } DartFlightState_e;
 
 /**
@@ -396,7 +435,7 @@ typedef struct
 /* 全局运行时数据实例 */
 extern DartControlRuntime_t DartControl;
 
-/* ----------------------------- Public functions -------------------------- */
+/* ------------------------------- 公共函数 ------------------------------- */
 /* 公共函数声明 */
 void control_Init(void);                    /* 初始化控制模块 */
 void control_Task(void);                    /* 控制主任务，周期调用 */

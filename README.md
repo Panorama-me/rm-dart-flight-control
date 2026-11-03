@@ -17,10 +17,10 @@ STM32F103 + OpenMV 的双控制器原型工程。F103 负责姿态解算、起�
 | 姿态解算 | BMI088 + 四元数 EKF，输出 yaw/pitch/roll | `ins_task.c`、`QuaternionEKF.c` |
 | 起飞检测 | 去重力机体 X 轴加速度阈值 + 连续 5 周期确认 | `Control_Task.c` |
 | 上升段 | 保持起飞 yaw/roll；pitch 两阶段补偿后锁存；识别到目标时 yaw 切视觉 | `run_ascent_stabilization()` |
-| 下降段 | bearing-only PN 前视引导 + 视觉 PID + roll 坐标投影 | `run_descent_guidance()` |
+| 下降段 | 前视追踪（视线角 + 前视时间×惯性系视线角速率）+ 视觉 PID + roll 坐标投影 | `run_descent_guidance()` |
 | 视觉滤波 | 默认 RAW_RATE（位置不过滤、仅轻滤角速率），可切回 EKF | `update_vision_filter()` |
 | 模式握手 | 下位机决定模式，握手帧携带 default/pitch/yaw/both | `openmv_handshake_send()` |
-| 遥测 | 24 字节、50 Hz，含陀螺、姿态、输出目标角、状态、flags | `attitude_telemetry_send()` |
+| 遥测 | 37 字节、50 Hz，含陀螺、姿态、输出目标角、LOS 增量、四路舵机角、状态、flags | `attitude_telemetry_send()` |
 | 目标识别 | 绿色色块 + 跟踪 ROI + 5 帧时间中值 | `main.py` |
 | 机载记录 | ImageIO 原生 RGB565 录像 + 每帧遥测 CSV | `main.py` |
 | 回放导出 | OpenMV 上回放，可导出 MJPEG | `imageio_playback.py` |
@@ -127,7 +127,7 @@ MODE：`0` default、`1` pitch-only、`2` yaw-only、`3` both（默认 `DART_MOD
 
 偏移超出 `|dx| ≤ 160`、`|dy| ≤ 120` 时按无目标处理。未识别时发送全零。
 
-### 4.3 遥测下行帧（F103 → OpenMV，24 字节，50 Hz）
+### 4.3 遥测下行帧（F103 → OpenMV，37 字节，50 Hz）
 
 | 字节 | 内容 |
 |---|---|
@@ -135,13 +135,20 @@ MODE：`0` default、`1` pitch-only、`2` yaw-only、`3` both（默认 `DART_MOD
 | 1-6 | 陀螺 X/Y/Z，int16 大端，0.1 °/s |
 | 7-12 | 当前 pitch/yaw/roll，int16 大端，0.01° |
 | 13-18 | 输出目标 pitch/yaw/roll，int16 大端，0.01° |
-| 19 | mode（0..3） |
-| 20 | state（0..6） |
+| 19 | mode（0..4，4 = debug） |
+| 20 | state（0..7，7 = debug） |
 | 21 | flags |
-| 22 | `0xFE` |
-| 23 | CRC8，覆盖字节 0..22 |
+| 22-23 | LOS yaw 增量，int16 大端，0.01°（相对上电 1 s 参考角） |
+| 24-25 | LOS pitch 增量，int16 大端，0.01°（同上） |
+| 26-27 | 舵机 1 角度，int16 大端，0.1°（1550 µs = 0°） |
+| 28-29 | 舵机 2 角度，int16 大端，0.1° |
+| 30-31 | 舵机 3 角度，int16 大端，0.1° |
+| 32-33 | 舵机 4 角度，int16 大端，0.1° |
+| 34 | 调试标志：bit0 = 参考角已捕获 |
+| 35 | `0xFE` |
+| 36 | CRC8，覆盖字节 0..35 |
 
-flags：bit0 视觉链路有效、bit1 目标有效、bit2 IMU 就绪、bit3 握手完成、bit4 输出角有效。CRC8 统一为初值 `0x00`、多项式 `0x8C` 的反射算法。
+flags：bit0 视觉链路有效、bit1 目标有效、bit2 IMU 就绪、bit3 握手完成、bit4 输出角有效。舵机角按 1550 µs = 0°、±1000 µs = ±90° 线性换算，仅作调试观察。CRC8 统一为初值 `0x00`、多项式 `0x8C` 的反射算法。
 
 ## 5. 关键参数速查
 
@@ -154,12 +161,12 @@ flags：bit0 视觉链路有效、bit1 目标有效、bit2 IMU 就绪、bit3 握
 | 上升 pitch 目标 | +25°（映射后角度） | `DART_ASCENT_PITCH_TARGET_DEG` |
 | 上升固定抬升 | 100 µs，低头到目标后转 PID | `DART_ASCENT_PITCH_LIFT_US` |
 | 下降判据 | 映射后 pitch < 5°，连续 25 周期，且已上升 300 ms | `DART_DESCENT_PITCH_THRESHOLD_DEG` |
-| PN 系数 / 前视 | 0.5 / 0.05 s | `DART_PN_NAVIGATION_CONSTANT`、`DART_PN_LOOKAHEAD_S` |
-| 视线角速率 / 指令限幅 | ±30 °/s、±20° | `DART_PN_MAX_*` |
+| 前视时间 / 前视限幅 | 0.15 s / ±5° | `DART_LEAD_TIME_S`、`DART_LEAD_MAX_DEG` |
+| 视线角速率 / 指令限幅 | ±30 °/s、±20° | `DART_LOS_RATE_LIMIT_DEG_S`、`DART_LEAD_COMMAND_LIMIT_DEG` |
 | 自稳 PID | yaw 5/0.01/0.5，pitch 10/0.05/0.5，roll 10/0.01/1.0 | `DART_*_STAB_*` |
 | 视觉 PID | yaw 5/0.1/0.5，pitch 10/0.1/5.0 | `DART_*_VISION_*` |
 | 舵机 | 中位 1550 µs，行程 550–2550 µs，步进 30 µs/周期 | `DART_SERVO_*` |
-| 图像 | QVGA 320×240，水平视场 68° | `DART_IMAGE_*`、`DART_CAMERA_HFOV_DEG` |
+| 图像 | QVGA 320×240；640×480 读出窗口，等效水平视场约 19° | `DART_IMAGE_*`、`DART_CAMERA_FOCAL_PX` |
 | 视觉链路 / 目标保持 | 250 ms / 120 ms，500 ms 复位 EKF | `DART_VISION_LINK_TIMEOUT_MS` 等 |
 | 录像 | 起飞开始，下降 +3 s 停止，上限 30 s | `main.py` |
 

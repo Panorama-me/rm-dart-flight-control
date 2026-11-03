@@ -128,8 +128,8 @@ def frame(ns, pitch, yaw, roll, state):
     b[19] = ns["MODE_BOTH"]
     b[20] = state
     b[21] = ns["F_IMU_READY"] | ns["F_HANDSHAKE_DONE"]
-    b[22] = ns["TELEM_EOF"]
-    b[23] = ns["crc8_lsb"](b, 0, 23)
+    b[ns["T_EOF_INDEX"]] = ns["TELEM_EOF"]
+    b[ns["T_CRC_INDEX"]] = ns["crc8_lsb"](b, 0, ns["T_CRC_INDEX"])
     return b
 
 
