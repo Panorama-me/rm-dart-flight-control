@@ -634,6 +634,7 @@ static float calculate_yaw_hold(const INS_t *ins)
                               DART_INS_YAW_RATE_RAD_S(ins));
 }
 
+#if DART_ASCENT_PITCH_MODE == DART_PITCH_MODE_HOLD
 /* 未启用 pitch 补偿时的俯仰自稳：保持起飞瞬间的俯仰角。
    与 yaw/roll 自稳使用同一套思路，只是各轴角度不跨 ±180 度归一化。 */
 static float calculate_pitch_hold(const INS_t *ins)
@@ -643,12 +644,13 @@ static float calculate_pitch_hold(const INS_t *ins)
     return calculate_axis_pid(&DartControl.pitch_pid, error,
                               DART_INS_PITCH_RATE_RAD_S(ins));
 }
+#endif
 
-/* 横滚参考角：启用 roll 初始补偿时锁定补偿目标角，否则保持起飞横滚角。 */
+/* 横滚参考角：固定为 DART_ROLL_HOLD_DEG（0°），即机翼水平。
+   原来在未启用补偿时保持起飞横滚角，会把发射架的初始倾斜带入整段飞行。 */
 static float roll_reference_deg(void)
 {
-    return DART_ASCENT_ROLL_COMPENSATION_ENABLE ? DART_ASCENT_ROLL_TARGET_DEG
-                                                : DartControl.telemetry.launch_roll_deg;
+    return DART_ROLL_HOLD_DEG;
 }
 
 static float calculate_roll_hold(const INS_t *ins)
@@ -750,42 +752,54 @@ static void run_ascent_stabilization(const INS_t *ins)
         DartControl.telemetry.output_yaw_deg = DartControl.telemetry.launch_yaw_deg;
     }
 
-    /* ---------- pitch：启用补偿走补偿思路，未启用走自稳思路 ---------- */
-    if (!DART_ASCENT_PITCH_COMPENSATION_ENABLE)
-    {
-        /* 未启用 pitch 补偿：保持起飞瞬间的俯仰角，与 roll/yaw 自稳一致。 */
-        pitch_output = calculate_pitch_hold(ins);
-        output_pitch_deg = DartControl.telemetry.launch_pitch_deg;
-    }
-    else if (!DartControl.ascent_pitch_done)
+    /* ---------- pitch：三种策略，由 DART_ASCENT_PITCH_MODE 选择 ---------- */
+#if DART_ASCENT_PITCH_MODE == DART_PITCH_MODE_HOLD
+    /* 策略 0：不补偿，纯 PID 保持起飞瞬间的俯仰角。 */
+    pitch_output = calculate_pitch_hold(ins);
+    output_pitch_deg = DartControl.telemetry.launch_pitch_deg;
+#else
+    if (!DartControl.ascent_pitch_done)
     {
         if (pitch_deg < DART_ASCENT_PITCH_TARGET_DEG)
             DartControl.ascent_pitch_below_target = 1U;
-        else if (DartControl.ascent_pitch_below_target)
+
+        if (!DartControl.ascent_pitch_below_target)
         {
-            /* 从下方回到目标角：补偿完成，锁存到本次飞行结束。 */
+            /* 阶段1：尚未低头，固定抬升抵消发射低头。 */
+            pitch_output = DART_ASCENT_PITCH_LIFT_US;
+            output_pitch_deg = DART_ASCENT_PITCH_TARGET_DEG;
+        }
+#if DART_ASCENT_PITCH_MODE == DART_PITCH_MODE_LIFT_PID
+        else if (pitch_deg >= DART_ASCENT_PITCH_TARGET_DEG)
+        {
+            /* 策略 1：从下方回到目标角，补偿完成并锁存。 */
             DartControl.ascent_pitch_done = 1U;
             reset_pid(&DartControl.pitch_pid);
         }
-
-        if (!DartControl.ascent_pitch_done)
+        else
         {
-            if (!DartControl.ascent_pitch_below_target)
-            {
-                /* 尚未低头：固定抬升输出，避免角度高于目标时 PID 反而压头。 */
-                pitch_output = DART_ASCENT_PITCH_LIFT_US;
-            }
-            else
-            {
-                /* 低头后：PID 闭环控制到目标角。 */
-                float pitch_error = DART_ASCENT_PITCH_TARGET_DEG - pitch_deg;
-                pitch_output = calculate_axis_pid(&DartControl.pitch_pid,
-                                                  pitch_error,
-                                                  DART_INS_PITCH_RATE_RAD_S(ins));
-            }
+            /* 策略 1：低头后 PID 闭环控制到目标角。 */
+            float pitch_error = DART_ASCENT_PITCH_TARGET_DEG - pitch_deg;
+            pitch_output = calculate_axis_pid(&DartControl.pitch_pid,
+                                              pitch_error,
+                                              DART_INS_PITCH_RATE_RAD_S(ins));
             output_pitch_deg = DART_ASCENT_PITCH_TARGET_DEG;
         }
+#else
+        else if (pitch_deg >= DART_ASCENT_PITCH_STOP_DEG)
+        {
+            /* 策略 2：抬头到停止角，补偿完成并锁存，此后不再输出 pitch。 */
+            DartControl.ascent_pitch_done = 1U;
+        }
+        else
+        {
+            /* 策略 2：固定抬头，全程开环，不调用 PID。 */
+            pitch_output = DART_ASCENT_PITCH_PULL_US;
+            output_pitch_deg = DART_ASCENT_PITCH_STOP_DEG;
+        }
+#endif
     }
+#endif
     DartControl.telemetry.pitch_output_us = pitch_output;
 
     /* ---------- roll：启用补偿则先固定抬升再闭环，未启用则自稳 ---------- */

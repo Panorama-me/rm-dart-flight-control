@@ -21,11 +21,22 @@ RECORD_ENABLE = True
 # Native RGB565 ImageIO file stream; no whole-video buffer in RAM.
 DESCENT_RECORD_TAIL_MS = 3000
 MAX_RECORD_MS = 30000
-RECORD_INTERVAL_MS = 0  # 0: write every captured frame; >0: minimum interval
+# 0: write every captured frame; >0: minimum interval.
+# QVGA RGB565 is 153.6 KB/frame; writing every frame at 31 fps needs 4.76 MB/s,
+# which exceeds SPI SD throughput and stalls the main loop for 150-440 ms.
+# 取 33 而不是 50：实际间隔是 ceil(INTERVAL/主循环周期)*周期，主循环在 19~23 ms
+# 之间波动时，50 会跨 57/63/69 ms 三档（录像 14~18 fps、帧数忽多忽少），
+# 33 则恒定落到 2 帧一录（22~26 fps），帧数稳定且写入仅 0.3~0.4 MB/s。
+RECORD_INTERVAL_MS = 33
 RECORD_SYNC_MS = 1000
 TELEM_TIMEOUT_MS = 300
 TELEM_LOG_ENABLE = True
 TELEM_LOG_SYNC_MS = 1000
+
+# 0: no overlay, 1: target box + FPS + state line, 2: full debug text
+OVERLAY_LEVEL = 1
+# Frames between manual GC runs while the collector is disabled.
+GC_COLLECT_INTERVAL = 60
 
 # 模式：由下位机握手决定
 MODE_DEFAULT = 0
@@ -422,45 +433,41 @@ def poll_telemetry():
 # =========================
 # 上行目标帧
 # =========================
-def send_target(dx, dy):
+# 预分配发送缓冲：每帧新建 bytearray 会产生垃圾，飞行中触发 GC 造成帧抖动。
+TX_FRAME = bytearray(8)
+TX_FRAME[0] = VISION_SOF
+TX_FRAME[6] = VISION_EOF
+
+
+def send_frame(dx, dy, recognized):
     global TX_SKIP_COUNT, TX_SLOW_COUNT
 
     if not uart.txdone():
         TX_SKIP_COUNT += 1
         return
 
-    frame = bytearray([VISION_SOF,
-                       (dx >> 8) & 0xFF, dx & 0xFF,
-                       (dy >> 8) & 0xFF, dy & 0xFF,
-                       1, VISION_EOF])
-    frame.append(crc8_lsb(frame))
+    TX_FRAME[1] = (dx >> 8) & 0xFF
+    TX_FRAME[2] = dx & 0xFF
+    TX_FRAME[3] = (dy >> 8) & 0xFF
+    TX_FRAME[4] = dy & 0xFF
+    TX_FRAME[5] = 1 if recognized else 0
+    TX_FRAME[7] = crc8_lsb(TX_FRAME, 0, 7)
 
     t0 = time.ticks_ms()
-    uart.write(frame)
+    uart.write(TX_FRAME)
     dt = time.ticks_diff(time.ticks_ms(), t0)
 
     if dt > TX_SLOW_MS:
         TX_SLOW_COUNT += 1
         print("[DEBUG] write slow:", dt, "ms, tx_skip:", TX_SKIP_COUNT)
+
+
+def send_target(dx, dy):
+    send_frame(dx, dy, 1)
 
 
 def send_no_target():
-    global TX_SKIP_COUNT, TX_SLOW_COUNT
-
-    if not uart.txdone():
-        TX_SKIP_COUNT += 1
-        return
-
-    frame = bytearray([VISION_SOF, 0, 0, 0, 0, 0, VISION_EOF])
-    frame.append(crc8_lsb(frame))
-
-    t0 = time.ticks_ms()
-    uart.write(frame)
-    dt = time.ticks_diff(time.ticks_ms(), t0)
-
-    if dt > TX_SLOW_MS:
-        TX_SLOW_COUNT += 1
-        print("[DEBUG] write slow:", dt, "ms, tx_skip:", TX_SKIP_COUNT)
+    send_frame(0, 0, 0)
 
 
 # =========================
@@ -801,6 +808,9 @@ def draw_overlay(img, blob, found_flag, cur_roi, fps, t_ms,
                  op, oy, or_,
                  file_name, rx_frames):
 
+    if OVERLAY_LEVEL <= 0:
+        return
+
     if found_flag == 1:
         img.draw_rectangle((blob.x, blob.y, blob.w, blob.h),
                            color=(255, 0, 0))
@@ -809,6 +819,19 @@ def draw_overlay(img, blob, found_flag, cur_roi, fps, t_ms,
                         color=(0, 255, 0), scale=1)
 
     img.draw_string((2, 2), "FPS:%.1f" % fps, color=(255, 0, 0), scale=1)
+
+    if OVERLAY_LEVEL < 2:
+        # 精简模式：只留一行状态，其余信息遥测 CSV 里都有
+        if link:
+            img.draw_string((2, 10),
+                            "M:%s S:%s" % (mode_name(mode_value),
+                                           state_name(state)),
+                            color=(255, 255, 0), scale=1)
+        else:
+            img.draw_string((2, 10), "M:%s S:--" % mode_name(mode_value),
+                            color=(255, 255, 0), scale=1)
+        return
+
     img.draw_string((2, 10), "t=%d ms T:%d" % (t_ms, rx_frames),
                     color=(255, 255, 0), scale=1)
 
@@ -880,6 +903,11 @@ telem_idx = 0
 
 record_dir = pick_record_dir() if (RECORD_ENABLE or TELEM_LOG_ENABLE) else None
 print("RECORD_DIR =", record_dir)
+
+# 主循环里关闭自动 GC，避免它在任意一帧触发造成 10~30 ms 抖动；
+# 改为每 GC_COLLECT_INTERVAL 帧手动收一次。
+gc.collect()
+gc.disable()
 
 start = time.ticks_ms()
 frame_cnt = 0
@@ -953,14 +981,22 @@ try:
         update_recording(img)
 
         gc_counter += 1
-        if gc_counter >= 3:
+        if gc_counter >= GC_COLLECT_INTERVAL:
+            gc.enable()
             gc.collect()
+            gc.disable()
             gc_counter = 0
 
 except KeyboardInterrupt:
     print("[DEBUG] KeyboardInterrupt")
 
+except MemoryError:
+    # 关掉自动 GC 后堆耗尽才会走到这里，说明 GC_COLLECT_INTERVAL 设得太大
+    print("[DEBUG] MemoryError: heap exhausted, lower GC_COLLECT_INTERVAL")
+
 finally:
+    gc.enable()
+
     if recording:
         stop_recording()
     stop_telemetry_log()

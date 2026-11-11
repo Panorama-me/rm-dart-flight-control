@@ -39,12 +39,16 @@ void MX_TIM2_Init(void)
   TIM_OC_InitTypeDef sConfigOC = {0};
 
   /* USER CODE BEGIN TIM2_Init 1 */
-
+  /* 舵机 PWM 时基：PSC=71 -> 1 MHz（1 tick = 1 us），ARR=4999 -> 5 ms / 200 Hz。
+     行程上限 2550 us 对应 51% 占空、低电平只剩 2450 us，已到这颗舵机的边界，
+     若满舵时出现抖动或发热，先退回 100 Hz（9999）或 50 Hz（19999）。
+     频率硬上限约 392 Hz，受 2550 us 最大脉宽约束。
+     同步修改 MA_DartGuide.ioc 的 TIM2.Period，否则 CubeMX 重新生成会覆盖此处。 */
   /* USER CODE END TIM2_Init 1 */
   htim2.Instance = TIM2;
   htim2.Init.Prescaler = 71;
   htim2.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim2.Init.Period = 19999;
+  htim2.Init.Period = 4999;
   htim2.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
   htim2.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
   if (HAL_TIM_PWM_Init(&htim2) != HAL_OK)

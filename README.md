@@ -158,17 +158,17 @@ flags：bit0 视觉链路有效、bit1 目标有效、bit2 IMU 就绪、bit3 握
 | 最大 dt | 20 ms | `DART_MAX_CONTROL_DT_MS` |
 | 起飞加速度阈值 | 22.0 m/s²，连续 5 周期 | `DART_LAUNCH_ACCEL_THRESHOLD` |
 | 起飞姿态采样 | 5 帧，yaw 圆均值 | `DART_LAUNCH_ATTITUDE_SAMPLE_COUNT` |
-| 上升 pitch 目标 | +25°（映射后角度） | `DART_ASCENT_PITCH_TARGET_DEG` |
-| 上升固定抬升 | 100 µs，低头到目标后转 PID | `DART_ASCENT_PITCH_LIFT_US` |
+| 上升 pitch 目标 | +30°（映射后角度） | `DART_ASCENT_PITCH_TARGET_DEG` |
+| 上升 pitch 策略 | LIFT_BANG：130 µs 硬抬升 → 100 µs 固定抬头 → 输出 0，全程开环 | `DART_ASCENT_PITCH_*` |
 | 下降判据 | 映射后 pitch < 5°，连续 25 周期，且已上升 300 ms | `DART_DESCENT_PITCH_THRESHOLD_DEG` |
-| 前视时间 / 前视限幅 | 0.15 s / ±5° | `DART_LEAD_TIME_S`、`DART_LEAD_MAX_DEG` |
-| 视线角速率 / 指令限幅 | ±30 °/s、±20° | `DART_LOS_RATE_LIMIT_DEG_S`、`DART_LEAD_COMMAND_LIMIT_DEG` |
-| 自稳 PID | yaw 5/0.01/0.5，pitch 10/0.05/0.5，roll 10/0.01/1.0 | `DART_*_STAB_*` |
-| 视觉 PID | yaw 5/0.1/0.5，pitch 10/0.1/5.0 | `DART_*_VISION_*` |
-| 舵机 | 中位 1550 µs，行程 550–2550 µs，步进 30 µs/周期 | `DART_SERVO_*` |
-| 图像 | QVGA 320×240；640×480 读出窗口，等效水平视场约 19° | `DART_IMAGE_*`、`DART_CAMERA_FOCAL_PX` |
+| 前视时间 / 前视限幅 | 0.15 s / ±2.5° | `DART_LEAD_TIME_S`、`DART_LEAD_MAX_DEG` |
+| 视线角速率 / 指令限幅 | ±15 °/s、±10°（死区 1.0 °/s、低通 55 ms） | `DART_LOS_RATE_LIMIT_DEG_S`、`DART_LEAD_COMMAND_LIMIT_DEG` |
+| 自稳 PID | yaw 20/0/3.5，pitch 10/0/1.0，roll 10/0/1.0 | `DART_*_STAB_*` |
+| 视觉 PID | yaw 5/0.01/0.05，pitch 10/0.01/0.05（**待整定**） | `DART_*_VISION_*` |
+| 舵机 | PWM 200 Hz，中位 1550 µs，行程 550–2550 µs，步进 30 µs/控制周期 | `DART_SERVO_*` |
+| 图像 | QVGA 320×240；640×480 读出窗口，等效水平视场约 19°；焦距 1516/2188（**待标定**，方像素应为同值） | `DART_IMAGE_*`、`DART_CAMERA_FOCAL_*_PX` |
 | 视觉链路 / 目标保持 | 250 ms / 120 ms，500 ms 复位 EKF | `DART_VISION_LINK_TIMEOUT_MS` 等 |
-| 录像 | 起飞开始，下降 +3 s 停止，上限 30 s | `main.py` |
+| 录像 | 起飞开始，下降 +3 s 停止，上限 30 s；最小间隔 33 ms（约 22~26 fps） | `main.py` |
 
 完整参数表（含含义、单位与代码位置）见 [docs/技术手册.md](docs/技术手册.md#7-参数总表)。
 
@@ -176,12 +176,25 @@ flags：bit0 视觉链路有效、bit1 目标有效、bit2 IMU 就绪、bit3 握
 
 | 项目 | 状态 | 日期 |
 |---|---|---|
-| Keil 全量编译 | 0 Error / 0 Warning；Code=38964、RO=2768、RW=548、ZI=18604 | 2026-11-02 22:49 |
-| RAM 占用 | 19152 / 20480 B，余量 1328 B | 2026-11-02 |
+| Keil 全量编译 | 0 Error / 0 Warning；Code=38844、RO=2768、RW=564、ZI=18620 | 2026-11-11 17:46 |
+| RAM 占用 | 19184 / 20480 B，余量 1296 B | 2026-11-11 |
 | 主机测试 | 14 项全部通过（Python 3.12.14） | 2026-11-03 |
-| 实机验证 | **未完成**：舵机方向、IMU 轴向、PID 与引导参数均未上板确认 | — |
+| 实机验证 | 部分完成：11.11 八发已校核 yaw/roll 自稳与 pitch 补偿；舵机方向、焦距、视觉 PID 仍未确认 | 2026-11-11 |
 
-> 上述编译结果来自 `rm_dart/MDK-ARM/build_vision_filter_final.log`。该日志早于 `ctl_task.h` 的最后一次改动（2026-11-02 23:08），重新编译后请以新日志为准。
+### 6.1 11.11 实测记录（八发，`内录/11.11/telem_00009~16`）
+
+遥测 47.6 Hz、帧号零丢帧。飞行流程：LAUNCHED ≈250 ms → ASCENT 0.8~1.2 s → DESCENT ≈3 s。
+
+| 项目 | 结果 |
+|---|---|
+| yaw 自稳 20/0/3.5 | 上升段误差 RMS **0.42~1.01°**、输出仅占行程 5~16%；对照 09 发的旧参数 10/1.0 为 2.71° |
+| roll 自稳 10/0/1.0 | 误差 RMS 0.42~1.29°，静差 1.0~8.1°，与配平量（10~82 µs）成正比；增益反推八发均为 −9.3~−10.9 |
+| pitch 补偿 LIFT_BANG | **成功 6/8**，锁定 30.4~31.5°（364~531 ms）。10 发峰值仅 28.8°（差 1.2° 未锁定）；14 发阶段 1 拖 1083 ms 冲至 51.8° |
+| 下降段姿态 | 四发均在 t≈2.4~2.6 s、pitch 到 −50° 后翻滚（gz 达 400~1450 °/s），可用制导窗口仅约 1.2 s |
+| 视觉制导 | **未闭环**：场地无靶标，`flags` bit1 的置位来自树叶误识别；仅 16 发上升段视觉 yaw 激活 797 ms |
+| 录像 | 15 个 mjpeg 全部 100% 完整（FFD8==FFD9）；帧数 55~77 源于间隔 50 ms 跨档，已改 33 ms |
+
+> 待办：pitch 补偿加阶段 1 超时（救 14 发）、PULL 100→115（救 10 发）、舵机中位 1500/1550 确认、焦距标定。
 
 ## 7. 版本管理
 
