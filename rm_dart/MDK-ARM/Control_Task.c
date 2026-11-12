@@ -574,6 +574,7 @@ static void update_vision_filter(float dt, uint32_t now_ms)
                                    inv_frame_dt, rate_alpha, rate_valid);
 #endif
             DartControl.telemetry.vision.recognized = 1U;
+            DartControl.telemetry.vision.lost_frames = 0U;
             DartControl.telemetry.vision.raw_x = sample_x;
             DartControl.telemetry.vision.raw_y = sample_y;
             DartControl.telemetry.vision.last_target_ms = sample_tick;
@@ -582,6 +583,8 @@ static void update_vision_filter(float dt, uint32_t now_ms)
         {
             /* 未识别到有效目标，丢失帧计数增加 */
             DartControl.telemetry.vision.lost_frame_count++;
+            if (DartControl.telemetry.vision.lost_frames < 255U)
+                DartControl.telemetry.vision.lost_frames++;
 #if DART_VISION_FILTER_MODE == DART_VISION_FILTER_RAW_RATE
             DartControl.vision_x_ekf.rate = 0.0f;
             DartControl.vision_y_ekf.rate = 0.0f;
@@ -682,6 +685,76 @@ static float calculate_yaw_hold(const INS_t *ins)
     float error = wrap_180(DartControl.telemetry.launch_yaw_deg - ins->Yaw);
     return calculate_axis_pid(&DartControl.yaw_pid, error,
                               DART_INS_YAW_RATE_RAD_S(ins));
+}
+
+/*
+ * @brief 记录「目标最居中」时的机体航向
+ * @param ins 惯性导航数据
+ *
+ * 判据只有一条：|视线偏航角| 变小，说明目标更靠近画面中心，此时把当前 yaw 记下来。
+ * 全程只读 ins->Yaw，不参与视线角的加减，所以不存在符号歧义。
+ * 目标丢失后本函数不再被更新，最佳航向自然冻结。
+ */
+static void update_yaw_best_lock(const INS_t *ins)
+{
+#if DART_YAW_ABS_LOCK_ENABLE
+    float los_abs;
+
+    if (!DartControl.telemetry.vision.valid ||
+        !DartControl.telemetry.vision.recognized)
+        return;
+
+    los_abs = fabsf(DartControl.telemetry.vision.los_yaw_deg);
+
+    /* 首帧无条件记录；之后必须比历史最优再好 margin 才更新，
+       避免噪声尖峰把锁定角钉在错误位置。 */
+    if (!DartControl.yaw_best_valid ||
+        (los_abs < DartControl.yaw_best_los_deg - DART_YAW_BEST_MARGIN_DEG))
+    {
+        DartControl.yaw_best_deg = ins->Yaw;
+        DartControl.yaw_best_los_deg = los_abs;
+        DartControl.yaw_best_valid = 1U;
+    }
+#else
+    (void)ins;
+#endif
+}
+
+/*
+ * @brief 脱锁后的 yaw 输出
+ * @param ins 惯性导航数据
+ * @return yaw 舵机输出（微秒）
+ *
+ * 优先朝「目标最居中时的航向」闭环；从未识别到目标则回发射航向。
+ * 与视觉分支用同一个 PID 和符号，保证脱锁瞬间输出连续、不跳变。
+ */
+static float yaw_unlock_output(const INS_t *ins)
+{
+#if DART_YAW_ABS_LOCK_ENABLE
+    if (DartControl.yaw_best_valid)
+    {
+        float error = wrap_180(DartControl.yaw_best_deg - ins->Yaw);
+        return DART_DESCENT_YAW_OUTPUT_SIGN *
+               calculate_axis_pid(&DartControl.yaw_vision_pid, error,
+                                  DART_INS_YAW_RATE_RAD_S(ins));
+    }
+#endif
+    return calculate_yaw_hold(ins);
+}
+
+/*
+ * @brief 遥测上报的 yaw 目标角
+ * @return 记录过最佳航向则报该角，否则报发射航向
+ *
+ * 脱锁后这个值不再等于发射航向，上位机能直接看出「目标指向哪里」。
+ */
+static float yaw_abs_output_deg(void)
+{
+#if DART_YAW_ABS_LOCK_ENABLE
+    if (DartControl.yaw_best_valid)
+        return DartControl.yaw_best_deg;
+#endif
+    return DartControl.telemetry.launch_yaw_deg;
 }
 
 #if DART_ASCENT_PITCH_MODE == DART_PITCH_MODE_HOLD
@@ -909,13 +982,20 @@ static void run_descent_guidance(const INS_t *ins)
     uint32_t target_age_ms;
 #endif
 
+    /* 每周期更新最佳航向；目标丢失后自然冻结，供脱锁后保持。 */
+    update_yaw_best_lock(ins);
+
     /* 下降段 roll 保持补偿目标（启用补偿）或起飞横滚角（未启用补偿）。 */
     DartControl.telemetry.roll_output_us = calculate_roll_hold(ins);
     DartControl.telemetry.output_roll_deg = roll_reference_deg();
     DartControl.telemetry.output_valid = 1U;
 
 #if DART_DESCENT_LOCK_LAST_VISUAL_COMMAND_ENABLE
-    if (!DartControl.telemetry.vision.valid)
+    /* 连续丢帧达到阈值即脱锁，不再等 vision.valid 的 120 ms 超时；
+       链路中断（收不到帧，计数不再增加）仍由 !valid 兜底。 */
+    if (!DartControl.telemetry.vision.valid ||
+        (DartControl.telemetry.vision.lost_frames >=
+         DART_DESCENT_UNLOCK_LOST_FRAMES))
 #else
     /* 关闭锁存时，收到明确的无目标帧就立即退出视觉引导；
        原有超时逻辑仍可兜底串口帧丢失。 */
@@ -931,9 +1011,9 @@ static void run_descent_guidance(const INS_t *ins)
                 glide_pitch_output(ins, DART_GLIDE_PITCH_DEG);
             DartControl.telemetry.output_pitch_deg = DART_GLIDE_PITCH_DEG;
             DartControl.telemetry.target_pitch_deg = DART_GLIDE_PITCH_DEG;
-            DartControl.telemetry.yaw_output_us = calculate_yaw_hold(ins);
+            DartControl.telemetry.yaw_output_us = yaw_unlock_output(ins);
             DartControl.telemetry.output_yaw_deg =
-                DartControl.telemetry.launch_yaw_deg;
+                yaw_abs_output_deg();
             write_servo_outputs(DartControl.telemetry.pitch_output_us,
                                 DartControl.telemetry.yaw_output_us,
                                 DartControl.telemetry.roll_output_us);
@@ -990,9 +1070,8 @@ static void run_descent_guidance(const INS_t *ins)
         /* 锁存关闭或已超时：丢弃旧视觉指令，改为保持起飞偏航、俯仰回中。 */
         DartControl.telemetry.target_yaw_deg = 0.0f;
         DartControl.telemetry.target_pitch_deg = 0.0f;
-        DartControl.telemetry.yaw_output_us = calculate_yaw_hold(ins);
-        DartControl.telemetry.output_yaw_deg =
-            DartControl.telemetry.launch_yaw_deg;
+        DartControl.telemetry.yaw_output_us = yaw_unlock_output(ins);
+        DartControl.telemetry.output_yaw_deg = yaw_abs_output_deg();
         DartControl.telemetry.pitch_output_us = 0.0f;
         DartControl.telemetry.output_pitch_deg = 0.0f;
         write_servo_outputs(0.0f,
@@ -1653,6 +1732,10 @@ void control_Task(void)
             DartControl.ascent_vision_yaw_active = 0U;
             DartControl.descent_target_seen = 0U;
             DartControl.descent_vision_active = 0U;
+            DartControl.yaw_best_valid = 0U;
+            DartControl.telemetry.vision.lost_frames = 0U;
+            DartControl.yaw_best_deg = 0.0f;
+            DartControl.yaw_best_los_deg = 0.0f;
             DartControl.telemetry.launch_yaw_deg = ins_snapshot.Yaw;
             DartControl.telemetry.launch_pitch_deg =
                 DART_INS_PITCH_DEG(&ins_snapshot);

@@ -229,13 +229,28 @@ extern "C" {
 /* 阶段1：pitch 尚未低于目标角时输出固定抬升量，抵消发射低头。
    阶段2：角度低于目标后按 LIFT_PID / LIFT_BANG 各自的策略回目标角。
    阶段3：到达目标或进入下降段即停止补偿。 */
-#define DART_ASCENT_PITCH_LIFT_US             110.0f               /* 阶段1 固定抬升输出（微秒）；对齐 11.12-15 实测 */
+#define DART_ASCENT_PITCH_LIFT_US             100.0f               /* 阶段1 固定抬升输出（微秒）；对齐 11.12-15 实测 */
+/* 11.12 全部 14 发可见阶段1=≈100us、阶段2=≈110us，切换点无一例外落在 pitch 穿过 30° 时。
+   11.11 那批是 LIFT=130 / PULL=100，与 git 基线一致，说明中途改过一次且未提交。 */
 
 /* ------------------------------ 下降段 ---------------------------------- */
 #define DART_DESCENT_PITCH_THRESHOLD_DEG      (5.0f)                 /* 取反后的俯仰角低于此值判断进入下降段（度） */
 #define DART_DESCENT_CONFIRM_COUNT               25U                 /* 连续满足下降条件次数确认进入下降 */
 /* 滑翔总开关：下降段无目标时启用滑翔速率环（见 DART_GLIDE_* 参数）。 */
 #define DART_DESCENT_GLIDE_ENABLE                1U
+/* 脱锁航向锁定：跟踪期间记录「目标最居中时的机体 yaw」，脱锁后以该角为目标。
+   判据是 |视线偏航角| 变小：越接近 0 说明目标越靠近画面中心，此时的 yaw 就是目标方位。
+   只记录 yaw、不参与视线角的加减，因此不存在符号歧义。
+   1 = 启用（0则保持原行为：脱锁后回发射航向）。 */
+#define DART_YAW_ABS_LOCK_ENABLE                 1U
+/* 更新最佳航向需要的改进量（度）。防止噪声尖峰把锁定角钉在错误位置：
+   只有 |视线角| 比历史最优值再小 0.15 度才更新。 */
+#define DART_YAW_BEST_MARGIN_DEG                0.15f
+/* 脱锁判据：连续丢失的视觉帧数达到此值即切脱锁锁定，不再等
+   DART_TARGET_LOST_HOLD_MS 的 120 ms 超时。按 26 fps 算：
+   2 帧 ≈ 77 ms；调成 1 则丢一帧就切（约 38 ms）。
+   注意：帧数按视觉帧累计，不是 2 ms 的控制周期。 */
+#define DART_DESCENT_UNLOCK_LOST_FRAMES          2U
 /* 滑翔速率环：不直接给目标角，而是控制「低头速率」，让 pitch 缓慢逼近基准角。
    期望速率 = GAIN × (当前角 - 目标角)，限幅 ±MAX_RATE；
    舵面 = RATE_KD × (期望速率 - 实际速率)。
@@ -418,6 +433,7 @@ typedef struct
     uint32_t crc_error_count;   /* CRC 错误计数 */
     uint8_t link_valid;         /* 链路有效标志 */
     uint8_t recognized;         /* 当前帧是否识别到目标 */
+    uint8_t lost_frames;        /* 连续丢失的视觉帧数（识别到即清零） */
     uint8_t valid;              /* 目标是否有效（用于引导） */
 } DartVisionTarget_t;
 
@@ -511,6 +527,9 @@ typedef struct
     float descent_glide_pitch_deg;          /* 锁存的滑翔俯仰角 */
     uint8_t landed;                         /* 已检测到落地（角速率突增） */
     float landing_prev_w2;                  /* 上一周期角速率平方，用于连两帧判据 */
+    float yaw_best_deg;                     /* 目标最居中时的机体航向（度） */
+    float yaw_best_los_deg;                 /* 上述时刻的 |视线偏航角|（度） */
+    uint8_t yaw_best_valid;                 /* 已记录到最佳航向 */
 } DartControlRuntime_t;
 
 /* 全局运行时数据实例 */

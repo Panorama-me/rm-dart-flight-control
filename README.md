@@ -170,6 +170,7 @@ flags：bit0 视觉链路有效、bit1 目标有效、bit2 IMU 就绪、bit3 握
 | 视觉链路 / 目标保持 | 250 ms / 120 ms，500 ms 复位 EKF | `DART_VISION_LINK_TIMEOUT_MS` 等 |
 | 上电 yaw 零偏标定 | 静止 2 s，测漂移速率并补偿 | `DART_YAW_CALIB_*` |
 | 下降段滑翔速率环 | 基准 −30°；期望速率 = 1.0/s × 角偏差（限 ±35 °/s）；舵面 = 2.5 × 速率误差 | `DART_GLIDE_*` |
+| 脱锁保持 | 视线偏航角绝对值创新低时记录当时 yaw 作为最佳航向，脱锁后按该角闭环（不回发射航向） | `DART_YAW_ABS_LOCK_ENABLE` |
 | 落地状态 | 合成角速率 >500 °/s 单帧，>400 连两帧 → LANDED，停四路 PWM、舵机自由 | `DART_LANDING_*` |
 | 录像 | 起飞开始，下降 +3 s 停止，上限 30 s；最小间隔 33 ms（约 22~26 fps） | `main.py` |
 
