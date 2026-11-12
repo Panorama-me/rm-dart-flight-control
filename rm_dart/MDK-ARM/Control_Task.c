@@ -53,6 +53,27 @@ static float wrap_180(float angle)
         angle += 360.0f;
     return angle;
 }
+#if DART_YAW_CALIB_ENABLE
+/*
+ * @brief 对原始偏航角做上电零偏补偿
+ * @param raw_yaw 原始偏航角（度）
+ * @param now_ms 当前时间戳（毫秒）
+ * @return 补偿后的偏航角（度）
+ *
+ * 补偿量 = 标定期总漂移 + 漂移速率 x 标定结束后的经过时间。
+ * 标定未完成或漂移低于阈值时原样返回。
+ */
+static float yaw_with_bias_compensation(float raw_yaw, uint32_t now_ms)
+{
+    if (!DartControl.yaw_calib_done)
+        return raw_yaw;
+    return wrap_180(raw_yaw -
+                    DartControl.yaw_calib_drift_deg -
+                    DartControl.yaw_bias_dps *
+                    ((now_ms - DartControl.yaw_calib_end_ms) * 0.001f));
+}
+#endif
+
 
 /**
  * @brief 设置飞行状态并记录进入该状态的时间戳
@@ -130,6 +151,35 @@ static void init_axis_pid(PID_t *pid, float kp, float ki, float kd)
              DART_PID_IMPROVE_FLAGS);
     pid->User_Func2_f = gyro_rate_derivative;
 }
+/*
+ * @brief 滑翔速率环：把俯仰角缓慢拉向目标角
+ * @param ins 惯性导航数据
+ * @param target_deg 目标俯仰角（度）
+ * @return pitch 通道舵机输出（微秒）
+ *
+ * 不直接按角度误差给力，而是先算「期望低头速率」= GAIN x 角度偏差，
+ * 再限幅到正负 MAX_RATE；舵面 = RATE_KD x (期望速率 - 实际速率)。
+ * 接近目标时期望速率自动减小，到达即稳定，不会过冲。
+ */
+static float glide_pitch_output(const INS_t *ins, float target_deg)
+{
+    float rate_cmd;
+    float rate_now;
+    float rate_err;
+
+    /* 低头为正：当前角高于目标角时给正速率 */
+    rate_cmd = DART_GLIDE_RATE_GAIN *
+               (DART_INS_PITCH_DEG(ins) - target_deg);
+    rate_cmd = constrain_float(rate_cmd,
+                               -DART_GLIDE_MAX_RATE,
+                               DART_GLIDE_MAX_RATE);
+
+    rate_now = -DART_INS_PITCH_RATE_RAD_S(ins) * DART_RAD_TO_DEG;
+    rate_err = rate_cmd - rate_now;
+
+    return DART_DESCENT_PITCH_OUTPUT_SIGN * DART_GLIDE_RATE_KD * rate_err;
+}
+
 
 /**
  * @brief 设置指定舵机通道的 PWM 比较值（脉宽，单位 us）
@@ -855,7 +905,7 @@ static void run_descent_guidance(const INS_t *ins)
     float sin_roll;
     float yaw_command;
     float pitch_command;
-#if DART_DESCENT_LOCK_LAST_VISUAL_COMMAND_ENABLE
+#if (DART_DESCENT_LOCK_LAST_VISUAL_COMMAND_ENABLE && !DART_DESCENT_GLIDE_ENABLE)
     uint32_t target_age_ms;
 #endif
 
@@ -873,7 +923,25 @@ static void run_descent_guidance(const INS_t *ins)
         !DartControl.telemetry.vision.recognized)
 #endif
     {
-#if DART_DESCENT_LOCK_LAST_VISUAL_COMMAND_ENABLE
+#if DART_DESCENT_GLIDE_ENABLE
+        /* 无目标/链路中断：滑翔速率环，缓慢拉向基准滑翔角。 */
+        if (DART_MODE != DART_MODE_YAW)
+        {
+            DartControl.telemetry.pitch_output_us =
+                glide_pitch_output(ins, DART_GLIDE_PITCH_DEG);
+            DartControl.telemetry.output_pitch_deg = DART_GLIDE_PITCH_DEG;
+            DartControl.telemetry.target_pitch_deg = DART_GLIDE_PITCH_DEG;
+            DartControl.telemetry.yaw_output_us = calculate_yaw_hold(ins);
+            DartControl.telemetry.output_yaw_deg =
+                DartControl.telemetry.launch_yaw_deg;
+            write_servo_outputs(DartControl.telemetry.pitch_output_us,
+                                DartControl.telemetry.yaw_output_us,
+                                DartControl.telemetry.roll_output_us);
+            return;
+        }
+#endif
+/* 滑翔开启时，锁定逻辑被滑翔取代，不再编译 */
+#if (DART_DESCENT_LOCK_LAST_VISUAL_COMMAND_ENABLE && !DART_DESCENT_GLIDE_ENABLE)
         target_age_ms = HAL_GetTick() -
                         DartControl.telemetry.vision.last_target_ms;
         if (DartControl.descent_target_seen &&
@@ -906,6 +974,7 @@ static void run_descent_guidance(const INS_t *ins)
             return;
         }
 #endif
+#if !DART_DESCENT_GLIDE_ENABLE
 
         if (DartControl.descent_vision_active)
         {
@@ -930,6 +999,7 @@ static void run_descent_guidance(const INS_t *ins)
                             DartControl.telemetry.yaw_output_us,
                             DartControl.telemetry.roll_output_us);
         return;
+#endif
     }
 
     if (!DartControl.descent_vision_active)
@@ -1004,10 +1074,13 @@ static void run_descent_guidance(const INS_t *ins)
 
     DartControl.telemetry.pitch_output_us = 0.0f;
     if (DART_MODE != DART_MODE_YAW)
+        /* 视觉修正叠加在基准滑翔角上，再走速率环。
+           符号：pitch_command > 0 表示目标在视线下方，需要低头，
+           故目标角 = 当前角 - 指令。旧 PID 是 out = -KP*cmd，同样反号。
+           11.12 实测 corr(los_pitch, out_pitch) = -0.84 佐证该约定。 */
         DartControl.telemetry.pitch_output_us =
-            DART_DESCENT_PITCH_OUTPUT_SIGN *
-            calculate_axis_pid(&DartControl.pitch_vision_pid, pitch_command,
-                               DART_INS_PITCH_RATE_RAD_S(ins));
+            glide_pitch_output(ins,
+                               DART_INS_PITCH_DEG(ins) - pitch_command);
     write_servo_outputs(DartControl.telemetry.pitch_output_us,
                         DartControl.telemetry.yaw_output_us,
                         DartControl.telemetry.roll_output_us);
@@ -1170,7 +1243,11 @@ void attitude_telemetry_send(void)
     primask = __get_PRIMASK();
     __disable_irq();
     pitch_deg = DART_INS_PITCH_DEG(ins);
+#if DART_YAW_CALIB_ENABLE
+    yaw_deg = yaw_with_bias_compensation(ins->Yaw, HAL_GetTick());
+#else
     yaw_deg = ins->Yaw;
+#endif
     roll_deg = DART_INS_ROLL_DEG(ins);
     gyro_x_deg = ins->Gyro[0] * DART_RAD_TO_DEG;
     gyro_y_deg = ins->Gyro[1] * DART_RAD_TO_DEG;
@@ -1390,6 +1467,20 @@ void servo_Init(void)
     DartControl.servo_ready = (status == HAL_OK) ? 1U : 0U;
 }
 
+#if DART_LANDING_DETECT_ENABLE
+/*
+ * @brief 停止四路舵机 PWM 输出，让舵机失去信号、自由转动
+ */
+static void stop_servo_outputs(void)
+{
+    (void)HAL_TIM_PWM_Stop(&htim2, TIM_CHANNEL_1);
+    (void)HAL_TIM_PWM_Stop(&htim2, TIM_CHANNEL_2);
+    (void)HAL_TIM_PWM_Stop(&htim2, TIM_CHANNEL_3);
+    (void)HAL_TIM_PWM_Stop(&htim2, TIM_CHANNEL_4);
+    DartControl.servo_ready = 0U;
+}
+#endif
+
 /**
  * @brief 控制主任务，按固定周期调用
  *
@@ -1410,6 +1501,10 @@ void control_Task(void)
     if (!DartControl.initialized)
         return;
 
+    /* 已落地：停止一切控制输出，等待断电 */
+    if (DartControl.flight_state == DART_STATE_LANDED)
+        return;
+
     /* 计算控制周期，限制最大 dt */
     now_ms = HAL_GetTick();
     elapsed_ms = now_ms - DartControl.last_control_ms;
@@ -1426,12 +1521,72 @@ void control_Task(void)
     if (!DartControl.imu_ready)
         return;
 
-    /* 若舵机未就绪，等待一段时间后尝试初始化 */
+    /* 获取 IMU 数据快照（关中断保护） */
+    shared_ins = get_gyro_data_Point();
+    primask = __get_PRIMASK();
+    __disable_irq();
+    memcpy(&ins_snapshot, shared_ins, sizeof(ins_snapshot));
+    if (primask == 0U)
+        __enable_irq();
+
+    /* 若舵机未就绪：先在 IMU_READY 标定 yaw 零偏，再初始化舵机 */
     if (!DartControl.servo_ready)
     {
         if (DartControl.flight_state == DART_STATE_READY)
             set_state(DART_STATE_IMU_READY);
+
+#if DART_YAW_CALIB_ENABLE
+        if (DartControl.flight_state == DART_STATE_IMU_READY)
+        {
+            if (!DartControl.yaw_calib_active)
+            {
+                DartControl.yaw_calib_active = 1U;
+                DartControl.yaw_calib_start_deg = ins_snapshot.Yaw;
+                DartControl.yaw_calib_gz_sum = 0.0f;
+                DartControl.yaw_calib_count = 0U;
+            }
+            DartControl.yaw_calib_gz_sum += fabsf(ins_snapshot.Gyro[2]);
+            DartControl.yaw_calib_count++;
+
+            if ((now_ms - DartControl.state_enter_ms) < DART_YAW_CALIB_MS)
+                return;
+
+            /* 采集结束：算总漂移与速率；期间平均角速率过大则放弃 */
+            DartControl.yaw_calib_drift_deg =
+                wrap_180(ins_snapshot.Yaw - DartControl.yaw_calib_start_deg);
+            if (DartControl.yaw_calib_count > 0U)
+            {
+                float avg_gz = DartControl.yaw_calib_gz_sum /
+                               (float)DartControl.yaw_calib_count;
+                if (avg_gz <= DART_YAW_CALIB_MAX_RATE_RAD_S)
+                {
+                    DartControl.yaw_bias_dps =
+                        DartControl.yaw_calib_drift_deg /
+                        (DART_YAW_CALIB_MS * 0.001f);
+                    if (fabsf(DartControl.yaw_bias_dps) <
+                        DART_YAW_CALIB_MIN_DPS)
+                    {
+                        DartControl.yaw_bias_dps = 0.0f;
+                        DartControl.yaw_calib_drift_deg = 0.0f;
+                    }
+                }
+                else
+                {
+                    DartControl.yaw_bias_dps = 0.0f;
+                    DartControl.yaw_calib_drift_deg = 0.0f;
+                }
+            }
+            DartControl.yaw_calib_end_ms = now_ms;
+            DartControl.yaw_calib_done = 1U;
+            DartControl.yaw_calib_active = 0U;
+        }
+#endif
+
+#if DART_YAW_CALIB_ENABLE
+        if ((now_ms - DartControl.state_enter_ms) >= DART_YAW_CALIB_MS)
+#else
         if ((now_ms - DartControl.state_enter_ms) >= DART_IMU_LED_HOLD_MS)
+#endif
         {
             servo_Init();
             if (DartControl.servo_ready)
@@ -1442,13 +1597,10 @@ void control_Task(void)
         return;
     }
 
-    /* 获取 IMU 数据快照（关中断保护） */
-    shared_ins = get_gyro_data_Point();
-    primask = __get_PRIMASK();
-    __disable_irq();
-    memcpy(&ins_snapshot, shared_ins, sizeof(ins_snapshot));
-    if (primask == 0U)
-        __enable_irq();
+#if DART_YAW_CALIB_ENABLE
+    /* yaw 零偏补偿：控制与遥测都用补偿后的角度 */
+    ins_snapshot.Yaw = yaw_with_bias_compensation(ins_snapshot.Yaw, now_ms);
+#endif
 
     /* 上电静止参考角：IMU 就绪 1 s 后采样一次，调试模式的 LOS 增量以此为零点。 */
     if (!debug_ref_valid &&
@@ -1561,7 +1713,28 @@ void control_Task(void)
 
     /* 状态：DESCENT —— 下降段视觉引导 */
     if (DartControl.flight_state == DART_STATE_DESCENT)
+    {
+#if DART_LANDING_DETECT_ENABLE
+        /* 落地检测：三轴合成角速率突增。单帧 >500 判定，>400 需连续两帧。 */
+        if (!DartControl.landed)
+        {
+            float w2 = ins_snapshot.Gyro[0] * ins_snapshot.Gyro[0] +
+                       ins_snapshot.Gyro[1] * ins_snapshot.Gyro[1] +
+                       ins_snapshot.Gyro[2] * ins_snapshot.Gyro[2];
+            if ((w2 > DART_LANDING_W2_HARD) ||
+                (w2 > DART_LANDING_W2_SOFT &&
+                 DartControl.landing_prev_w2 > DART_LANDING_W2_SOFT))
+            {
+                DartControl.landed = 1U;
+                stop_servo_outputs();
+                set_state(DART_STATE_LANDED);
+                return;
+            }
+            DartControl.landing_prev_w2 = w2;
+        }
+#endif
         run_descent_guidance(&ins_snapshot);
+    }
 }
 
 /**
@@ -1739,6 +1912,9 @@ void led_Task(void)
         break;
     case DART_STATE_DESCENT:
         led_write(1U, 0U, 1U);          /* 紫：下降段 */
+        break;
+    case DART_STATE_LANDED:
+        led_write(1U, 1U, 1U);          /* 白：已落地 */
         break;
     case DART_STATE_DEBUG:
         /* 调试模式：蓝绿闪烁，提示未发射、舵机不输出 */

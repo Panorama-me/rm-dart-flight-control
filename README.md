@@ -159,15 +159,18 @@ flags：bit0 视觉链路有效、bit1 目标有效、bit2 IMU 就绪、bit3 握
 | 起飞加速度阈值 | 22.0 m/s²，连续 5 周期 | `DART_LAUNCH_ACCEL_THRESHOLD` |
 | 起飞姿态采样 | 5 帧，yaw 圆均值 | `DART_LAUNCH_ATTITUDE_SAMPLE_COUNT` |
 | 上升 pitch 目标 | +30°（映射后角度） | `DART_ASCENT_PITCH_TARGET_DEG` |
-| 上升 pitch 策略 | LIFT_BANG：130 µs 硬抬升 → 100 µs 固定抬头 → 输出 0，全程开环 | `DART_ASCENT_PITCH_*` |
+| 上升 pitch 策略 | LIFT_BANG：硬抬升 → 固定抬头 → 输出 0，全程开环；阶段1 仅以 pitch 跌破目标角退出 | `DART_ASCENT_PITCH_*` |
 | 下降判据 | 映射后 pitch < 5°，连续 25 周期，且已上升 300 ms | `DART_DESCENT_PITCH_THRESHOLD_DEG` |
-| 前视时间 / 前视限幅 | 0.15 s / ±2.5° | `DART_LEAD_TIME_S`、`DART_LEAD_MAX_DEG` |
+| 前视时间 / 前视限幅 | 0.20 s / ±3.0° | `DART_LEAD_TIME_S`、`DART_LEAD_MAX_DEG` |
 | 视线角速率 / 指令限幅 | ±15 °/s、±10°（死区 1.0 °/s、低通 55 ms） | `DART_LOS_RATE_LIMIT_DEG_S`、`DART_LEAD_COMMAND_LIMIT_DEG` |
-| 自稳 PID | yaw 20/0/3.5，pitch 10/0/1.0，roll 10/0/1.0 | `DART_*_STAB_*` |
-| 视觉 PID | yaw 5/0.01/0.05，pitch 10/0.01/0.05（**待整定**） | `DART_*_VISION_*` |
+| 自稳 PID | yaw 20/0/1.5，pitch 20/0/1.5，roll 10/0/1.0 | `DART_*_STAB_*` |
+| 视觉 PID | yaw 20/3.0/3.5，pitch 20/0.01/3.0 | `DART_*_VISION_*` |
 | 舵机 | PWM 200 Hz，中位 1550 µs，行程 550–2550 µs，步进 30 µs/控制周期 | `DART_SERVO_*` |
-| 图像 | QVGA 320×240；640×480 读出窗口，等效水平视场约 19°；焦距 1516/2188（**待标定**，方像素应为同值） | `DART_IMAGE_*`、`DART_CAMERA_FOCAL_*_PX` |
+| 图像 | QVGA 320×240；**实际**读出窗口 640×480（`READOUT_ROI` 的 1280×960 未生效），视场 18.9°×14.2°；焦距 961/961 | `DART_IMAGE_*`、`DART_CAMERA_FOCAL_*_PX` |
 | 视觉链路 / 目标保持 | 250 ms / 120 ms，500 ms 复位 EKF | `DART_VISION_LINK_TIMEOUT_MS` 等 |
+| 上电 yaw 零偏标定 | 静止 2 s，测漂移速率并补偿 | `DART_YAW_CALIB_*` |
+| 下降段滑翔速率环 | 基准 −30°；期望速率 = 1.0/s × 角偏差（限 ±35 °/s）；舵面 = 2.5 × 速率误差 | `DART_GLIDE_*` |
+| 落地状态 | 合成角速率 >500 °/s 单帧，>400 连两帧 → LANDED，停四路 PWM、舵机自由 | `DART_LANDING_*` |
 | 录像 | 起飞开始，下降 +3 s 停止，上限 30 s；最小间隔 33 ms（约 22~26 fps） | `main.py` |
 
 完整参数表（含含义、单位与代码位置）见 [docs/技术手册.md](docs/技术手册.md#7-参数总表)。

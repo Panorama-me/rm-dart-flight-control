@@ -55,7 +55,7 @@ STATE_ASCENT = 4
 STATE_DESCENT = 5
 STATE_VISION_ERROR = 6
 STATE_DEBUG = 7
-STATE_NAMES = ("R", "I", "S", "L", "A", "D", "E", "G")
+STATE_NAMES = ("R", "I", "S", "L", "A", "D", "E", "G", "N")
 
 mode = MODE_BOTH
 
@@ -64,7 +64,7 @@ mode = MODE_BOTH
 # =========================
 BLOB_ROI = (0, 0, 320, 240)  # snapshot 输出画面；动态 cur_roi 只限制识别搜索
 INIT_ROI = (0, 0, 320, 240)
-READOUT_ROI = (0, 700, 640, 480)  # 传感器读出窗口，决定取景范围和放大效果
+READOUT_ROI = (0, 0, 1280, 960)  # 传感器读出窗口，决定取景范围和放大效果
 FOUND_RANGE_X = 40
 FOUND_RANGE_Y = 40
 THRESHOLDS1 = [(9, 100, -102, -25, 0, 127)]
@@ -812,26 +812,40 @@ def draw_overlay(img, blob, found_flag, cur_roi, fps, t_ms,
         return
 
     if found_flag == 1:
+        # 精简模式多占一行（OP/OY），识别框提示相应下移
+        found_y = 26 if OVERLAY_LEVEL < 2 else 18
         img.draw_rectangle((blob.x, blob.y, blob.w, blob.h),
                            color=(255, 0, 0))
-        img.draw_string((2, 18),
+        img.draw_string((2, found_y),
                         "Found! X=%d Y=%d" % (blob.cx(), blob.cy()),
                         color=(0, 255, 0), scale=1)
 
-    img.draw_string((2, 2), "FPS:%.1f" % fps, color=(255, 0, 0), scale=1)
-
     if OVERLAY_LEVEL < 2:
-        # 精简模式：只留一行状态，其余信息遥测 CSV 里都有
+        # 精简模式：姿态角 + 控制输出 + 状态，不显示 FPS（帧率看遥测 CSV）
         if link:
-            img.draw_string((2, 10),
+            img.draw_string((2, 2),
+                            "P:%.1f Y:%.1f R:%.1f" % (att_p, att_y, att_r),
+                            color=(255, 255, 0), scale=1)
+            if flags & F_OUTPUT_VALID:
+                img.draw_string((2, 10), "OP:%.1f OY:%.1f" % (op, oy),
+                                color=(255, 255, 0), scale=1)
+            else:
+                img.draw_string((2, 10), "OP:-- OY:--",
+                                color=(255, 255, 0), scale=1)
+            img.draw_string((2, 18),
                             "M:%s S:%s" % (mode_name(mode_value),
                                            state_name(state)),
                             color=(255, 255, 0), scale=1)
         else:
-            img.draw_string((2, 10), "M:%s S:--" % mode_name(mode_value),
+            img.draw_string((2, 2), "P:-- Y:-- R:--",
+                            color=(255, 255, 0), scale=1)
+            img.draw_string((2, 10), "OP:-- OY:--",
+                            color=(255, 255, 0), scale=1)
+            img.draw_string((2, 18), "M:%s S:--" % mode_name(mode_value),
                             color=(255, 255, 0), scale=1)
         return
 
+    img.draw_string((2, 2), "FPS:%.1f" % fps, color=(255, 0, 0), scale=1)
     img.draw_string((2, 10), "t=%d ms T:%d" % (t_ms, rx_frames),
                     color=(255, 255, 0), scale=1)
 

@@ -57,6 +57,9 @@ telem_*.csv
 # ---------- 本地 AI 工作目录（含记忆与临时分析，不入库） ----------
 .workbuddy-ai/
 
+# ---------- Keil 命令行编译日志 ----------
+build_log.txt
+
 # ---------- 操作系统 / 编辑器 ----------
 Thumbs.db
 ehthumbs.db
@@ -65,3 +68,4 @@ Desktop.ini
 .vscode/
 .idea/
 *.swp
+*.autosave
