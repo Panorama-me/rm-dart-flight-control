@@ -911,7 +911,10 @@ def draw_overlay(img, blob, found_flag, cur_roi, fps, t_ms,
             else:
                 img.draw_string((2, 10), "OP:-- OY:--",
                                 color=(255, 255, 0), scale=1)
-            state_txt = "M:%s S:%s" % (mode_name(mode_value), state_name(state))
+            # 帧率画进叠加层：叠加层会被烧进录像帧里，所以录完直接看视频
+            # 就能知道当时的实际主循环帧率，不用另外接串口读。
+            state_txt = "M:%s S:%s %.0ffps" % (mode_name(mode_value),
+                                               state_name(state), fps)
             # 有 SD 同步失败时追加「E录像次数/日志次数」，正常时不占位
             if record_sync_err or telem_log_sync_err:
                 state_txt += " E%d/%d" % (record_sync_err, telem_log_sync_err)
