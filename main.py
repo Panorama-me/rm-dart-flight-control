@@ -990,7 +990,6 @@ def draw_overlay(img, blob, found_flag, cur_roi, fps, t_ms,
 # =========================
 init_sensor()
 print("init successful")
-clock = time.clock()
 
 try:
     led = sensor.LED("LED_RED")
@@ -1018,7 +1017,6 @@ cur_roi = INIT_ROI
 
 try:
     while True:
-        clock.tick()
         poll_telemetry()
 
         t_ms = time.ticks_diff(time.ticks_ms(), start)
@@ -1061,7 +1059,11 @@ try:
             send_no_target()
             draw_found_flag = 0
 
-        fps = clock.fps()
+        # 平均帧率，而不是 clock.fps()：后者在 update_recording() 之前调用，
+        # 测不到 draw_overlay + 写卡的时间，会显示成「半个循环」的帧率
+        # （11.13 实测录像 21 fps，叠加层却显示 100 fps，就是这个原因）。
+        # 用 frame_cnt / 累计时间给出从启动到现在的真实平均帧率。
+        fps = frame_cnt * 1000.0 / max(1, t_ms)
 
         # 调试模式：5 Hz 打印一次，避免刷屏拖慢主循环
         if mode == MODE_DEBUG and time.ticks_diff(t_ms, last_dbg_print) >= 200:
