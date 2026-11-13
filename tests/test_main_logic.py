@@ -183,7 +183,7 @@ class MainLogicTest(unittest.TestCase):
                          (-4.5, 5.25, -6.75))
         self.assertTrue(ns["flight_seen"])
 
-    def test_telemetry_csv_logs_every_valid_frame_and_closes_after_descent(self):
+    def test_telemetry_csv_logs_every_valid_frame_and_closes_after_launch_cap(self):
         ns, fake_time, uart = load_logic()
         ns["record_dir"] = "/sdcard"
         fake_time.now = 25
@@ -212,7 +212,7 @@ class MainLogicTest(unittest.TestCase):
         self.assertTrue(log.closed)
         self.assertTrue(ns["telem_log_done"])
 
-    def test_recording_starts_after_missed_launch_and_closes_after_tail(self):
+    def test_recording_starts_after_missed_launch_and_closes_after_launch_cap(self):
         ns, fake_time, uart = load_logic()
         ns["record_dir"] = "/sdcard"
         uart.rx.extend(frame(ns, 0, 0, 0, ns["STATE_DESCENT"]))
@@ -225,15 +225,64 @@ class MainLogicTest(unittest.TestCase):
         self.assertTrue(FakeImageIO.instances[0].closed)
         self.assertTrue(ns["record_done"])
 
-    def test_recording_closes_on_max_duration_without_descent(self):
+    def test_debug_mode_ignores_launch_cap_but_honours_absolute_cap(self):
+        """debug 只等落地标志，不套用发射后 3 s 兜底，但仍有绝对上限。"""
+        ns, fake_time, _ = load_logic()
+        ns["record_dir"] = "/sdcard"
+        ns["telem_state"] = ns["STATE_DEBUG"]
+        ns["flight_seen"] = True
+        ns["update_recording"](object())
+        stream = FakeImageIO.instances[0]
+
+        fake_time.now = ns["RECORD_MAX_FROM_LAUNCH_MS"] + 1
+        ns["update_recording"](object())
+        self.assertFalse(stream.closed)
+        self.assertTrue(ns["recording"])
+
+        fake_time.now = ns["MAX_RECORD_MS"] + 1
+        ns["update_recording"](object())
+        self.assertTrue(stream.closed)
+        self.assertTrue(ns["record_done"])
+
+    def test_recording_stops_after_landed_flag(self):
+        """落地标志优先于 3 s 兜底：落地早于 3 s 时必须提前停。"""
         ns, fake_time, uart = load_logic()
         ns["record_dir"] = "/sdcard"
+        fake_time.now = 25
         uart.rx.extend(frame(ns, 0, 0, 0, ns["STATE_ASCENT"]))
         ns["poll_telemetry"]()
         ns["update_recording"](object())
-        fake_time.now = ns["MAX_RECORD_MS"]
+        stream = FakeImageIO.instances[0]
+        self.assertTrue(ns["recording"])
+
+        fake_time.now = 2000
+        uart.rx.extend(frame(ns, 0, 0, 0, ns["STATE_LANDED"]))
+        ns["poll_telemetry"]()
         ns["update_recording"](object())
-        self.assertTrue(FakeImageIO.instances[0].closed)
+        self.assertFalse(stream.closed)        # 落地尾巴还没到
+
+        fake_time.now = 2000 + ns["LANDED_RECORD_TAIL_MS"] + 1
+        ns["update_recording"](object())
+        self.assertTrue(stream.closed)
+        self.assertTrue(ns["record_done"])
+
+    def test_telemetry_log_stops_after_landed_flag(self):
+        ns, fake_time, uart = load_logic()
+        ns["record_dir"] = "/sdcard"
+        fake_time.now = 25
+        uart.rx.extend(frame(ns, 0, 0, 0, ns["STATE_ASCENT"]))
+        ns["poll_telemetry"]()
+        log = FakeTextFile.instances[0]
+
+        fake_time.now = 2000
+        uart.rx.extend(frame(ns, 0, 0, 0, ns["STATE_LANDED"]))
+        ns["poll_telemetry"]()
+        self.assertFalse(log.closed)
+
+        fake_time.now = 2000 + ns["LANDED_RECORD_TAIL_MS"] + 1
+        ns["poll_telemetry"]()
+        self.assertTrue(log.closed)
+        self.assertTrue(ns["telem_log_done"])
 
     def test_native_stream_syncs_without_jpeg_arguments(self):
         ns, fake_time, _ = load_logic()

@@ -19,14 +19,20 @@ uart = UART(UART_ID, UART_BAUDRATE, read_buf_len=2048)
 # =========================
 RECORD_ENABLE = True
 # Native RGB565 ImageIO file stream; no whole-video buffer in RAM.
-DESCENT_RECORD_TAIL_MS = 3000
+#
+# 录像 / CSV 的停止策略（两者共用 record_should_stop）：
+#   1) 收到落地标志（state=8）→ 再录 LANDED_RECORD_TAIL_MS 后停止，debug 与否一致
+#   2) 非 debug 且未检出落地 → 发射后 RECORD_MAX_FROM_LAUNCH_MS 兜底
+#   3) debug 且未检出落地 → 不设时间停止点，只等落地
+#   4) MAX_RECORD_MS 是任何情况下的绝对上限，防止 SD 写满
+LANDED_RECORD_TAIL_MS = 200
+RECORD_MAX_FROM_LAUNCH_MS = 3000
 MAX_RECORD_MS = 30000
 # 0: write every captured frame; >0: minimum interval.
-# QVGA RGB565 is 153.6 KB/frame; writing every frame at 31 fps needs 4.76 MB/s,
-# which exceeds SPI SD throughput and stalls the main loop for 150-440 ms.
-# 取 33 而不是 50：实际间隔是 ceil(INTERVAL/主循环周期)*周期，主循环在 19~23 ms
-# 之间波动时，50 会跨 57/63/69 ms 三档（录像 14~18 fps、帧数忽多忽少），
-# 33 则恒定落到 2 帧一录（22~26 fps），帧数稳定且写入仅 0.3~0.4 MB/s。
+# QVGA RGB565 是 150 KB/帧，按 31 fps 全写要 4.6 MB/s，超出 SPI SD 吞吐并把主循环
+# 阻塞 150~440 ms。取 33 而不是 50：实际间隔是 ceil(INTERVAL/主循环周期)*周期，
+# 主循环波动时 50 会跨三档导致帧数漂移，33 落到两帧一录更稳定。
+# 实测有效写入约 14.6 fps（61 帧 / 4.17 s），即持续 2.14 MB/s。
 RECORD_INTERVAL_MS = 33
 RECORD_SYNC_MS = 1000
 TELEM_TIMEOUT_MS = 300
@@ -55,6 +61,7 @@ STATE_ASCENT = 4
 STATE_DESCENT = 5
 STATE_VISION_ERROR = 6
 STATE_DEBUG = 7
+STATE_LANDED = 8
 STATE_NAMES = ("R", "I", "S", "L", "A", "D", "E", "G", "N")
 
 mode = MODE_BOTH
@@ -316,6 +323,7 @@ last_no_link_print = 0
 telem_frames = 0
 flight_seen = False
 descent_seen_ms = None
+landed_seen_ms = None
 
 
 def poll_telemetry():
@@ -329,7 +337,7 @@ def poll_telemetry():
     global telem_ok_printed, last_no_link_print
     global telem_frames
     global mode
-    global flight_seen, descent_seen_ms
+    global flight_seen, descent_seen_ms, landed_seen_ms
 
     got = 0
     n = uart.any()
@@ -399,6 +407,8 @@ def poll_telemetry():
             flight_seen = True
         if telem_state == STATE_DESCENT and descent_seen_ms is None:
             descent_seen_ms = time.ticks_ms()
+        if telem_state == STATE_LANDED and landed_seen_ms is None:
+            landed_seen_ms = time.ticks_ms()
 
         if telem_mode <= MODE_DEBUG:
             mode = telem_mode
@@ -503,7 +513,6 @@ record_path = None
 record_name = None
 record_stream = None
 recording = False
-record_stop_at = 0
 record_done = False
 record_start_ms = None
 record_last_write_ms = None
@@ -594,14 +603,35 @@ def append_telemetry_log(now_ms, frame_number):
         telem_log_done = True
 
 
+def record_should_stop(now_ms, start_ms):
+    """录像与 CSV 共用的停止判据。
+
+    1) 收到落地标志 → 落地后再等 LANDED_RECORD_TAIL_MS 停止，debug 与否一致
+    2) 非 debug 且未检出落地 → 发射后 RECORD_MAX_FROM_LAUNCH_MS 兜底
+    3) debug 且未检出落地 → 不设时间停止点，只等落地
+    4) MAX_RECORD_MS 是任何情况下的绝对上限，防止 SD 写满
+    """
+    if landed_seen_ms is not None:
+        return time.ticks_diff(
+            now_ms,
+            time.ticks_add(landed_seen_ms, LANDED_RECORD_TAIL_MS)) >= 0
+
+    if telem_state != STATE_DEBUG:
+        if time.ticks_diff(
+                now_ms,
+                time.ticks_add(start_ms, RECORD_MAX_FROM_LAUNCH_MS)) >= 0:
+            return True
+
+    return time.ticks_diff(
+        now_ms, time.ticks_add(start_ms, MAX_RECORD_MS)) >= 0
+
+
 def update_telemetry_log(now_ms):
     global telem_log_last_sync_ms, telem_log_done, telem_log_sync_err
     if telem_log_stream is None:
         return
 
-    if ((descent_seen_ms is not None and
-         time.ticks_diff(now_ms, descent_seen_ms) >= DESCENT_RECORD_TAIL_MS) or
-            time.ticks_diff(now_ms, telem_log_start_ms) >= MAX_RECORD_MS):
+    if record_should_stop(now_ms, telem_log_start_ms):
         stop_telemetry_log()
         telem_log_done = True
         print("telemetry log stop")
@@ -649,7 +679,7 @@ def next_record_path(dir_path):
 
 def start_recording():
     global record_path, record_name, record_stream
-    global recording, record_stop_at, record_start_ms
+    global recording, record_start_ms
     global record_last_write_ms, record_last_sync_ms
 
     if not RECORD_ENABLE or record_dir is None:
@@ -666,7 +696,6 @@ def start_recording():
     record_path = path
     record_name = path.split("/")[-1]
     recording = True
-    record_stop_at = 0
     record_start_ms = time.ticks_ms()
     record_last_write_ms = None
     record_last_sync_ms = record_start_ms
@@ -696,7 +725,7 @@ def stop_recording():
 
 
 def update_recording(img):
-    global recording, record_stop_at, record_done
+    global recording, record_done
     global record_last_write_ms, record_last_sync_ms, record_sync_err
 
     if not RECORD_ENABLE:
@@ -713,11 +742,7 @@ def update_recording(img):
         return
 
     now = time.ticks_ms()
-    if descent_seen_ms is not None:
-        record_stop_at = time.ticks_add(descent_seen_ms,
-                                        DESCENT_RECORD_TAIL_MS)
-    if ((record_stop_at and time.ticks_diff(now, record_stop_at) >= 0) or
-            time.ticks_diff(now, record_start_ms) >= MAX_RECORD_MS):
+    if record_should_stop(now, record_start_ms):
         stop_recording()
         record_done = True
         return
