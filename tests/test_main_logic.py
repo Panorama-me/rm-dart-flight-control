@@ -225,6 +225,24 @@ class MainLogicTest(unittest.TestCase):
         self.assertTrue(FakeImageIO.instances[0].closed)
         self.assertTrue(ns["record_done"])
 
+    def test_recording_starts_in_debug_mode(self):
+        """台架调试没有发射，也要能录像。"""
+        ns, fake_time, uart = load_logic()
+        ns["record_dir"] = "/sdcard"
+        fake_time.now = 25
+        uart.rx.extend(frame(ns, 0, 0, 0, ns["STATE_DEBUG"]))
+        ns["poll_telemetry"]()
+        self.assertFalse(ns["flight_seen"])
+        ns["update_recording"](object())
+        self.assertTrue(ns["recording"])
+        self.assertEqual(FakeImageIO.instances[0].frames, 1)
+
+        # debug 不套用发射后 3 s 兜底
+        fake_time.now = ns["RECORD_MAX_FROM_LAUNCH_MS"] + 100
+        ns["update_recording"](object())
+        self.assertTrue(ns["recording"])
+        self.assertFalse(FakeImageIO.instances[0].closed)
+
     def test_debug_mode_ignores_launch_cap_but_honours_absolute_cap(self):
         """debug 只等落地标志，不套用发射后 3 s 兜底，但仍有绝对上限。"""
         ns, fake_time, _ = load_logic()

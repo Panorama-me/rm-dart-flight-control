@@ -732,7 +732,9 @@ def update_recording(img):
         return
 
     if not recording:
-        if (not record_done) and flight_seen:
+        # 起飞段（3..5）或调试状态（7）都可以启动录像。
+        # 台架调试时不会发射，靠 telem_state == STATE_DEBUG 这一条兜住。
+        if (not record_done) and (flight_seen or telem_state == STATE_DEBUG):
             start_recording()
         if not recording:
             return
