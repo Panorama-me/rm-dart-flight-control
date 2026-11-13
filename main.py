@@ -38,16 +38,19 @@ RECORD_MAX_FROM_LAUNCH_MS = 3000
 MAX_RECORD_MS = 30000
 # 录像格式：True 直接编码成 MJPEG（.mjpeg，可播、小、快）；
 # False 或固件无 mjpeg 模块时退回 ImageIO 原生 RGB565（.bin，需导出）。
-# 实测（OPENMV4 / STM32H743, QVGA RGB565）：
-#   ImageIO 原始帧 25.4 ms/帧 150 KB  -> 主循环约 19.6 fps
-#   MJPEG q=50      4.4 ms/帧 5.6 KB  -> 主循环约 33.4 fps
+# 实测（OPENMV4 / STM32H743, QVGA RGB565, tools/bench_encode.py）：
+#   snapshot 25.4 ms（固定成本，与录像无关）
+#   ImageIO 原始帧 25.2 ms/帧 150.0 KB
+#   MJPEG q=50~60   4.6 ms/帧   5.6 KB
+# 存储环节快 5.5 倍。实际帧率还要加上 find_blobs + 叠加 + 串口约 17.9 ms：
+#   改造前 25.4+25.2+17.9 = 68.5 ms -> 14.6 fps（实测）
+#   改造后 25.4+ 4.6+17.9 = 47.8 ms -> 约 20.9 fps（看叠加层的 xxfps 确认）
 RECORD_USE_MJPEG = True
 RECORD_JPEG_QUALITY = 60
 # 0: write every captured frame; >0: minimum interval.
-# QVGA RGB565 是 150 KB/帧，按 31 fps 全写要 4.6 MB/s，超出 SPI SD 吞吐并把主循环
-# 阻塞 150~440 ms。取 33 而不是 50：实际间隔是 ceil(INTERVAL/主循环周期)*周期，
-# 主循环波动时 50 会跨三档导致帧数漂移，33 落到两帧一录更稳定。
-# 实测有效写入约 14.6 fps（61 帧 / 4.17 s），即持续 2.14 MB/s。
+# 取 33 而不是 50：实际间隔是 ceil(INTERVAL/主循环周期)*周期，主循环波动时
+# 50 会跨三档导致帧数漂移，33 落到两帧一录更稳定。
+# MJPEG 下单帧只有 5~8 KB，写卡不再是瓶颈，这个间隔实际决定了录像帧率上限（30 fps）。
 RECORD_INTERVAL_MS = 33
 RECORD_SYNC_MS = 1000
 TELEM_TIMEOUT_MS = 300
