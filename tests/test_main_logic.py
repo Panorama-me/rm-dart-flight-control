@@ -66,6 +66,24 @@ class FakeImageIO:
         self.closed = True
 
 
+class FakeMjpeg:
+    instances = []
+
+    def __init__(self, path):
+        self.path = path
+        self.frames = 0
+        self.qualities = []
+        self.closed = False
+        self.instances.append(self)
+
+    def write(self, img, quality=60):
+        self.frames += 1
+        self.qualities.append(quality)
+
+    def close(self):
+        self.closed = True
+
+
 class FakeTextFile:
     instances = []
 
@@ -96,7 +114,8 @@ def load_logic():
                          and node.value.func.id == "init_sensor")
     nodes = [node for node in tree.body
              if node.lineno < runtime_start
-             and isinstance(node, (ast.Assign, ast.FunctionDef, ast.ClassDef))
+             and isinstance(node, (ast.Assign, ast.FunctionDef,
+                                   ast.ClassDef, ast.Try))
              and not (isinstance(node, ast.Assign)
                       and any(isinstance(target, ast.Name) and target.id == "uart"
                               for target in node.targets))]
@@ -104,6 +123,7 @@ def load_logic():
     fake_time = FakeTime()
     fake_uart = FakeUART()
     FakeImageIO.instances = []
+    FakeMjpeg.instances = []
     FakeTextFile.instances = []
     namespace = {
         "time": fake_time,
@@ -224,6 +244,21 @@ class MainLogicTest(unittest.TestCase):
         ns["update_recording"](object())
         self.assertTrue(FakeImageIO.instances[0].closed)
         self.assertTrue(ns["record_done"])
+
+    def test_mjpeg_backend_writes_playable_stream(self):
+        """固件带 mjpeg 时应走 .mjpeg 直编码，而不是 .bin 原始流。"""
+        ns, fake_time, _ = load_logic()
+        ns["record_dir"] = "/sdcard"
+        ns["mjpeg"] = types.SimpleNamespace(Mjpeg=FakeMjpeg)
+        ns["flight_seen"] = True
+        ns["update_recording"](object())
+
+        stream = FakeMjpeg.instances[0]
+        self.assertTrue(stream.path.endswith(".mjpeg"))
+        self.assertEqual(stream.frames, 1)
+        self.assertEqual(stream.qualities, [ns["RECORD_JPEG_QUALITY"]])
+        self.assertTrue(ns["record_is_mjpeg"])
+        self.assertEqual(FakeImageIO.instances, [])
 
     def test_recording_starts_in_debug_mode(self):
         """台架调试没有发射，也要能录像。"""

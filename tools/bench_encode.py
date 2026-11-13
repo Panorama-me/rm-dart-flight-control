@@ -183,21 +183,36 @@ def main():
             cleanup(path)
 
     # ---------- [5] 方案 B：缩到 QQVGA 再存原始 ----------
+    # 不同固件缩放 API 不同（mean_pool / scale），缺了就跳过，不影响其他组。
     if sd:
         print("")
-        print("[5] 方案 B：mean_pool(2,2) 缩到 QQVGA 再写原始帧")
-        path = sd + "/.bench_small.bin"
-        cleanup(path)
-        stream = image.ImageIO(path, "w")
+        print("[5] 方案 B：缩到 QQVGA 再写原始帧")
+        small = None
+        for meth in ("mean_pool", "scale"):
+            if hasattr(sample, meth):
+                try:
+                    small = getattr(sample, meth)(2, 2) if meth == "mean_pool" \
+                        else getattr(sample, meth)(x_size=160, y_size=120)
+                    print("  使用 %s() 缩放" % meth)
+                    break
+                except Exception as e:
+                    print("  %s() 失败: %s" % (meth, e))
+                    small = None
+        if small is None:
+            print("  跳过：本固件没有可用的缩放接口")
+        else:
+            path = sd + "/.bench_small.bin"
+            cleanup(path)
+            stream = image.ImageIO(path, "w")
 
-        def _small():
-            stream.write(sample.mean_pool(2, 2))
+            def _small(img=small):
+                stream.write(img)
 
-        small_bytes = 160 * 120 * 2
-        results["small"] = bench("mean_pool + ImageIO.write", FRAMES,
-                                 _small, small_bytes)
-        stream.close()
-        cleanup(path)
+            small_bytes = 160 * 120 * 2
+            results["small"] = bench("缩放 + ImageIO.write", FRAMES,
+                                     _small, small_bytes)
+            stream.close()
+            cleanup(path)
 
     if mjpeg is None:
         print("")

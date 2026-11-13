@@ -64,11 +64,15 @@ def select_stream_path():
     print("No rec_XXXXX.bin recording found. Storage contents:")
     for directory in SEARCH_DIRS:
         try:
-            print(directory, os.listdir(directory)[:20])
+            names = os.listdir(directory)
+            print(directory, names[:20])
+            if any(n.startswith("rec_") and n.endswith(".mjpeg") for n in names):
+                print("  发现 .mjpeg 录像：那是可直接播放的文件，")
+                print("  拷到电脑用 VLC / 剪映打开即可，不需要本脚本。")
         except OSError:
             print(directory, "not mounted")
     print("Record with main.py first; wait for record start / record stop.")
-    print("This script plays existing .bin files; it does not record video.")
+    print("本脚本只处理旧的 .bin 原生流；新固件默认录 .mjpeg，无需导出。")
     return None
 
 

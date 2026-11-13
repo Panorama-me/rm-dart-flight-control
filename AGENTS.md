@@ -150,7 +150,7 @@ r_us = (s1 + s2 + s3 + s4) / 4 / 0.09
 # 要求 0 Error(s), 0 Warning(s)，并记录 Program Size
 
 # 2. 主机测试（在仓库根目录）
-python tests/test_main_logic.py      # 14 项
+python tests/test_main_logic.py      # 15 项
 python tests/test_playback_paths.py  # 5 项
 
 # 3. 编码自检（见 1.5）
