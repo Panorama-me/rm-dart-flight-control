@@ -217,6 +217,7 @@ rm_dart/MDK-ARM/
 rm_dart/Core/                 CubeMX 生成（UTF-8+CRLF，尽量不改）
 main.py                       OpenMV 上位机（UTF-8+LF）
 tools/mjpeg_player.py         MJPEG 拆帧 + 可调播放器
+tools/bench_encode.py         录像存储方案耗时实测（OpenMV 上跑）
 tests/                        主机单元测试
 docs/技术手册.md              完整技术手册（改代码要同步）
 内录/                         飞行数据，不入库
