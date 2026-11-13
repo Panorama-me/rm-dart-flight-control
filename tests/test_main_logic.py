@@ -260,6 +260,56 @@ class MainLogicTest(unittest.TestCase):
         self.assertFalse(ns["recording"])
         self.assertTrue(ns["record_done"])
 
+    def test_sync_failure_does_not_stop_recording(self):
+        """sync 只是掉电保险，失败不能让整段录像结束（曾导致录像提前一半）。"""
+        ns, fake_time, _ = load_logic()
+        ns["record_dir"] = "/sdcard"
+        ns["start_recording"]()
+        stream = FakeImageIO.instances[0]
+
+        def fail_sync():
+            raise OSError("SD sync failed")
+
+        stream.sync = fail_sync
+        fake_time.now = 1100          # 跨过 RECORD_SYNC_MS = 1000
+        ns["update_recording"](object())
+
+        self.assertFalse(stream.closed)
+        self.assertTrue(ns["recording"])
+        self.assertFalse(ns["record_done"])
+        self.assertEqual(ns["record_sync_err"], 1)
+
+        fake_time.now = 1200          # 下一帧必须照常写入
+        ns["update_recording"](object())
+        self.assertEqual(stream.frames, 2)
+        self.assertTrue(ns["recording"])
+
+    def test_flush_failure_does_not_stop_telemetry_log(self):
+        """flush 失败同理，不能把 CSV 断在 2 秒处。"""
+        ns, fake_time, uart = load_logic()
+        ns["record_dir"] = "/sdcard"
+        fake_time.now = 25
+        uart.rx.extend(frame(ns, 1.0, -2.0, 3.0, ns["STATE_ASCENT"]))
+        ns["poll_telemetry"]()
+        log = FakeTextFile.instances[0]
+
+        def fail_flush():
+            raise OSError("flush failed")
+
+        log.flush = fail_flush
+        fake_time.now = 1025         # 跨过 TELEM_LOG_SYNC_MS = 1000
+        uart.rx.extend(frame(ns, 1.5, -2.5, 3.5, ns["STATE_ASCENT"]))
+        ns["poll_telemetry"]()
+
+        self.assertFalse(log.closed)
+        self.assertFalse(ns["telem_log_done"])
+        self.assertEqual(ns["telem_log_sync_err"], 1)
+
+        fake_time.now = 1050
+        uart.rx.extend(frame(ns, 2.0, -3.0, 4.0, ns["STATE_ASCENT"]))
+        ns["poll_telemetry"]()
+        self.assertEqual(len("".join(log.data).splitlines()), 4)
+
 
 if __name__ == "__main__":
     unittest.main()

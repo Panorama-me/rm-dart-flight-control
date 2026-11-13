@@ -514,6 +514,11 @@ telem_log_start_ms = None
 telem_log_last_sync_ms = None
 telem_log_done = False
 
+# SD 同步/flush 失败次数。同步只是掉电保险，失败不能让录制或记录中止，
+# 但要能在叠加层里看见，否则出了问题只能事后反推。
+record_sync_err = 0
+telem_log_sync_err = 0
+
 
 def next_telemetry_path(dir_path):
     base = dir_path.rstrip("/") if dir_path else "."
@@ -590,7 +595,7 @@ def append_telemetry_log(now_ms, frame_number):
 
 
 def update_telemetry_log(now_ms):
-    global telem_log_last_sync_ms, telem_log_done
+    global telem_log_last_sync_ms, telem_log_done, telem_log_sync_err
     if telem_log_stream is None:
         return
 
@@ -603,13 +608,15 @@ def update_telemetry_log(now_ms):
         return
 
     if time.ticks_diff(now_ms, telem_log_last_sync_ms) >= TELEM_LOG_SYNC_MS:
+        # 先推进时间戳：失败也只等下一个周期再试，避免每帧刷屏
+        telem_log_last_sync_ms = now_ms
         try:
             telem_log_stream.flush()
-            telem_log_last_sync_ms = now_ms
         except Exception as e:
+            # flush 只是掉电时少丢数据的保险，失败不该中止记录。
+            # 真正致命的是写不进去（见 append_telemetry_log 的 write 异常）。
+            telem_log_sync_err += 1
             print("[DEBUG] telem log flush err:", e)
-            stop_telemetry_log()
-            telem_log_done = True
 
 
 def pick_record_dir():
@@ -690,7 +697,7 @@ def stop_recording():
 
 def update_recording(img):
     global recording, record_stop_at, record_done
-    global record_last_write_ms, record_last_sync_ms
+    global record_last_write_ms, record_last_sync_ms, record_sync_err
 
     if not RECORD_ENABLE:
         return
@@ -722,17 +729,26 @@ def update_recording(img):
         # Append the native image and its inter-frame interval to the SD file.
         record_stream.write(img)
         record_last_write_ms = time.ticks_ms()
-        if time.ticks_diff(record_last_write_ms,
-                           record_last_sync_ms) >= RECORD_SYNC_MS:
+    except Exception as e:
+        # 只有真正写不进去才放弃：写失败会破坏 MJPEG 流，重试没有意义。
+        print("[DEBUG] record write err:", e)
+        stop_recording()
+        record_done = True
+        return
+
+    if time.ticks_diff(record_last_write_ms,
+                       record_last_sync_ms) >= RECORD_SYNC_MS:
+        # sync 只是掉电保险。失败就跳过这一次，下个周期再试——
+        # 绝不能因为一次同步失败就结束整段录像。
+        record_last_sync_ms = record_last_write_ms
+        try:
             if hasattr(record_stream, "sync"):
                 record_stream.sync()
             elif hasattr(os, "sync"):
                 os.sync()
-            record_last_sync_ms = record_last_write_ms
-    except Exception as e:
-        print("[DEBUG] record write err:", e)
-        stop_recording()
-        record_done = True
+        except Exception as e:
+            record_sync_err += 1
+            print("[DEBUG] record sync err:", e)
 
 
 # =========================
@@ -832,9 +848,11 @@ def draw_overlay(img, blob, found_flag, cur_roi, fps, t_ms,
             else:
                 img.draw_string((2, 10), "OP:-- OY:--",
                                 color=(255, 255, 0), scale=1)
-            img.draw_string((2, 18),
-                            "M:%s S:%s" % (mode_name(mode_value),
-                                           state_name(state)),
+            state_txt = "M:%s S:%s" % (mode_name(mode_value), state_name(state))
+            # 有 SD 同步失败时追加「E录像次数/日志次数」，正常时不占位
+            if record_sync_err or telem_log_sync_err:
+                state_txt += " E%d/%d" % (record_sync_err, telem_log_sync_err)
+            img.draw_string((2, 18), state_txt,
                             color=(255, 255, 0), scale=1)
         else:
             img.draw_string((2, 2), "P:-- Y:-- R:--",
