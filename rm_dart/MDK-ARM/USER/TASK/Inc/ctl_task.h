@@ -258,15 +258,15 @@ extern "C" {
    接近目标时速率自动减小，到达即稳定（gyro ≈ 0），不会过冲。 */
 #define DART_GLIDE_PITCH_DEG                (-35.0f)   /* 基准滑翔俯仰角（度） */
 
-/* 滑翔段（无目标）：慢速把机头拉向基准角，GAIN 1.0 对应时间常数约 1 s。
-   11.14 的 00002~00007 用这组参数，俯仰通道峰值只有 9 度，pitch 平稳到 -30 以下。 */
-#define DART_GLIDE_RATE_GAIN                  1.0f     /* 每度偏差对应的目标角速率（1/秒） */
-#define DART_GLIDE_MAX_RATE                  50.0f     /* 最大低头速率（度/秒） */
+/* 滑翔段（无目标）：把机头拉向基准滑翔角，GAIN 5.0 对应时间常数约 0.2 s。
+   有了下面的输出限幅兜底，滑翔段不会再把舵面推进力矩反转区。 */
+#define DART_GLIDE_RATE_GAIN                  5.0f     /* 每度偏差对应的目标角速率（1/秒） */
+#define DART_GLIDE_MAX_RATE                  80.0f     /* 最大低头速率（度/秒） */
 
-/* 视觉段（有目标）：快速跟到视觉指令，GAIN 5.0 对应时间常数约 0.2 s。
+/* 视觉段（有目标）：比滑翔段更激进，GAIN 8.0 对应时间常数约 0.125 s。
    与滑翔段共用同一个速率环，但增益和限幅独立——改一段不影响另一段。 */
-#define DART_VISION_PITCH_RATE_GAIN           5.0f     /* 视觉指令 -> 目标角速率（1/秒） */
-#define DART_VISION_PITCH_MAX_RATE           80.0f     /* 视觉段最大低头速率（度/秒） */
+#define DART_VISION_PITCH_RATE_GAIN           8.0f     /* 视觉指令 -> 目标角速率（1/秒） */
+#define DART_VISION_PITCH_MAX_RATE          100.0f     /* 视觉段最大低头速率（度/秒） */
 
 /* 速率环增益（微秒 / (度/秒)），两段共用。 */
 #define DART_GLIDE_RATE_KD                    2.5f
