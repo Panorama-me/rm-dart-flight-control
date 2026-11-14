@@ -902,11 +902,12 @@ static void run_ascent_stabilization(const INS_t *ins)
         else
         {
             /* 策略 1（方案 B）：角度 + 速率串级。
-               先用角度差给出目标低头速率（低于停止角时为负，即希望抬头），
-               再对速率误差做比例控制。低头越快、角度越低，抬头力度越大；
-               反之 gy 变负（抬头过快）时输出转负，自动压低。
-               相比固定 PULL_US，力度随姿态变化，不会出现该刹车时力度不够、
-               该松手时还在推的情况。 */
+               rate_cmd 是期望低头速率（低头为正），pitch 低于停止角时为负，即希望抬头；
+               rate_now 是当前低头速率，等于遥测里的 gy_dps。
+               误差取「实际 - 期望」：正数表示低头比期望快、需要抬头。这样 rate_err
+               与舵面正方向（抬头为正）一致，输出端不用再取反。
+               力度随姿态连续变化：低头越快、角度越低，抬头越狠；gy 转负时输出也转负，
+               自动压低。相比固定 PULL_US，不会出现该刹车时力度不够、该松手时还在推。 */
             float rate_cmd = DART_ASCENT_PITCH_RATE_GAIN *
                              (pitch_deg - DART_ASCENT_PITCH_STOP_DEG);
             float rate_now;
@@ -916,8 +917,8 @@ static void run_ascent_stabilization(const INS_t *ins)
                                        -DART_ASCENT_PITCH_MAX_RATE,
                                        DART_ASCENT_PITCH_MAX_RATE);
             rate_now = -DART_INS_PITCH_RATE_RAD_S(ins) * DART_RAD_TO_DEG;
-            rate_err = rate_cmd - rate_now;
-            pitch_output = -DART_ASCENT_PITCH_RATE_KD * rate_err;
+            rate_err = rate_now - rate_cmd;
+            pitch_output = DART_ASCENT_PITCH_RATE_KD * rate_err;
             output_pitch_deg = DART_ASCENT_PITCH_STOP_DEG;
         }
 #else
