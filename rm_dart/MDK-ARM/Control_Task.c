@@ -152,32 +152,57 @@ static void init_axis_pid(PID_t *pid, float kp, float ki, float kd)
     pid->User_Func2_f = gyro_rate_derivative;
 }
 /*
- * @brief 滑翔速率环：把俯仰角缓慢拉向目标角
+ * @brief 俯仰速率环：把俯仰角拉向目标角，增益/限幅由调用方给
  * @param ins 惯性导航数据
  * @param target_deg 目标俯仰角（度）
- * @return pitch 通道舵机输出（微秒）
+ * @param gain 角度偏差 -> 期望低头速率的换算系数（1/秒），决定收敛快慢
+ * @param max_rate 期望低头速率限幅（度/秒）
+ * @return pitch 通道舵机输出（微秒），输出侧按低头/抬头分别限幅
  *
- * 不直接按角度误差给力，而是先算「期望低头速率」= GAIN x 角度偏差，
- * 再限幅到正负 MAX_RATE；舵面 = RATE_KD x (期望速率 - 实际速率)。
+ * 不直接按角度误差给力，而是先算「期望低头速率」= gain x 角度偏差，
+ * 再限幅到正负 max_rate；舵面 = RATE_KD x (期望速率 - 实际速率)。
  * 接近目标时期望速率自动减小，到达即稳定，不会过冲。
+ *
+ * 增益做成参数，是为了让「视觉段快、滑翔段慢」两套参数互不牵连：
+ * 共用一个 gain 时，为了视觉跟得快把 gain 调大，滑翔段就会过驱。
  */
-static float glide_pitch_output(const INS_t *ins, float target_deg)
+static float pitch_rate_loop(const INS_t *ins, float target_deg,
+                             float gain, float max_rate)
 {
     float rate_cmd;
     float rate_now;
     float rate_err;
 
     /* 低头为正：当前角高于目标角时给正速率 */
-    rate_cmd = DART_GLIDE_RATE_GAIN *
-               (DART_INS_PITCH_DEG(ins) - target_deg);
-    rate_cmd = constrain_float(rate_cmd,
-                               -DART_GLIDE_MAX_RATE,
-                               DART_GLIDE_MAX_RATE);
+    rate_cmd = gain * (DART_INS_PITCH_DEG(ins) - target_deg);
+    rate_cmd = constrain_float(rate_cmd, -max_rate, max_rate);
 
     rate_now = -DART_INS_PITCH_RATE_RAD_S(ins) * DART_RAD_TO_DEG;
     rate_err = rate_cmd - rate_now;
 
-    return DART_DESCENT_PITCH_OUTPUT_SIGN * DART_GLIDE_RATE_KD * rate_err;
+    /* 低头侧限幅挡在力矩反转点之前：11.14 实测俯仰通道超过约 17 度后，
+       舵面越大机头反而越抬头，pitch 卡在 -20 下不去。
+       抬头侧放宽，刹车本来就要靠大偏度。 */
+    return constrain_float(
+        DART_DESCENT_PITCH_OUTPUT_SIGN * DART_GLIDE_RATE_KD * rate_err,
+        -DART_GLIDE_MAX_OUTPUT_DOWN_US,
+        DART_GLIDE_MAX_OUTPUT_UP_US);
+}
+
+/* 滑翔段：慢速拉向基准滑翔角（无目标时用）。 */
+static float glide_pitch_output(const INS_t *ins, float target_deg)
+{
+    return pitch_rate_loop(ins, target_deg,
+                           DART_GLIDE_RATE_GAIN,
+                           DART_GLIDE_MAX_RATE);
+}
+
+/* 视觉段：快速跟到视觉指令（有目标时用）。 */
+static float vision_pitch_output(const INS_t *ins, float target_deg)
+{
+    return pitch_rate_loop(ins, target_deg,
+                           DART_VISION_PITCH_RATE_GAIN,
+                           DART_VISION_PITCH_MAX_RATE);
 }
 
 
@@ -1177,10 +1202,11 @@ static void run_descent_guidance(const INS_t *ins)
         /* 视觉修正叠加在基准滑翔角上，再走速率环。
            符号：pitch_command > 0 表示目标在视线下方，需要低头，
            故目标角 = 当前角 - 指令。旧 PID 是 out = -KP*cmd，同样反号。
-           11.12 实测 corr(los_pitch, out_pitch) = -0.84 佐证该约定。 */
+           11.12 实测 corr(los_pitch, out_pitch) = -0.84 佐证该约定。
+           走 vision_pitch_output：与滑翔段共用速率环，但用更快的一组增益。 */
         DartControl.telemetry.pitch_output_us =
-            glide_pitch_output(ins,
-                               DART_INS_PITCH_DEG(ins) - pitch_command);
+            vision_pitch_output(ins,
+                                DART_INS_PITCH_DEG(ins) - pitch_command);
     write_servo_outputs(DartControl.telemetry.pitch_output_us,
                         DartControl.telemetry.yaw_output_us,
                         DartControl.telemetry.roll_output_us);
