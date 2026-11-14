@@ -390,6 +390,39 @@ class MainLogicTest(unittest.TestCase):
         self.assertTrue(stream.closed)
         self.assertTrue(ns["record_done"])
 
+    def test_record_event_log_records_start_and_stop_with_frame_count(self):
+        """record_err.txt 必须能区分「开完就停」和「写到一半断」。
+
+        224 字节的零帧录像在场上无法判断是哪一种，所以 start 和 stop 都要记，
+        stop 还要带已写帧数和停止原因。
+        """
+        ns, fake_time, uart = load_logic()
+        ns["record_dir"] = "/sdcard"
+        fake_time.now = 25
+        uart.rx.extend(frame(ns, 0, 0, 0, ns["STATE_ASCENT"]))
+        ns["poll_telemetry"]()
+        ns["update_recording"](object())
+        # 测试走 ImageIO(.bin)，写间隔是 RECORD_INTERVAL_BIN_MS，不是 33 ms
+        fake_time.now = 25 + ns["RECORD_INTERVAL_BIN_MS"] + 1
+        ns["update_recording"](object())
+        self.assertEqual(FakeImageIO.instances[0].frames, 2)
+
+        fake_time.now = 2000
+        uart.rx.extend(frame(ns, 0, 0, 0, ns["STATE_LANDED"]))
+        ns["poll_telemetry"]()
+        fake_time.now = 2000 + ns["LANDED_RECORD_TAIL_MS"] + 1
+        ns["update_recording"](object())
+
+        logs = [f for f in FakeTextFile.instances
+                if f.path.endswith("record_err.txt")]
+        self.assertTrue(logs, "record_err.txt 没被写过")
+        # 每次 append 都会新开一个 FakeTextFile，要把所有实例拼起来
+        text = "".join("".join(f.data) for f in logs)
+        self.assertIn(",start,", text)
+        self.assertIn(",stop,", text)
+        self.assertIn("frames=2", text)
+        self.assertIn("reason=should_stop", text)
+
     def test_telemetry_log_stops_after_landed_flag(self):
         ns, fake_time, uart = load_logic()
         ns["record_dir"] = "/sdcard"

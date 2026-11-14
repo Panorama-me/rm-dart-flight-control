@@ -550,6 +550,8 @@ record_is_mjpeg = False
 # MJPEG 写入失败过一次后置 True，之后一律用 ImageIO 写 .bin。
 # 这样即使 mjpeg 模块在这块板子上有问题，也还能拿到原始帧。
 record_fallback_bin = False
+# 本次录像已成功写入的帧数。零帧 + 224 字节就是「一帧都没写进去」的铁证。
+record_frames = 0
 # 实际使用的写间隔：MJPEG 用 RECORD_INTERVAL_MS，降级后换成 RECORD_INTERVAL_BIN_MS
 record_interval_ms = RECORD_INTERVAL_MS
 record_done = False
@@ -706,18 +708,35 @@ def pick_record_dir():
     return None
 
 
-def log_record_error(stage, exc):
-    """把录像异常写进 SD 卡上的文本文件。
+def log_record_event(stage, text):
+    """把录像事件写进 SD 卡上的文本文件。
 
     现场往往没有串口，print 出来的信息会丢。写到卡上，飞完插电脑就能看到。
+    stage 取值：start / stop / open / write / retry。
+    start 和 stop 都会记，所以哪怕文件只有 224 字节（零帧），
+    也能从日志里看出是「开完就停」还是「第一帧写失败」。
     """
     if record_dir is None:
         return
+    # 不用 with：显式 open/close 与 telem log 的写法一致，
+    # 而且任何一步失败都只吞掉这一行日志，不影响录像主流程。
+    stream = None
     try:
-        with open(record_dir + "/record_err.txt", "a") as f:
-            f.write("%d,%s,%s\n" % (time.ticks_ms(), stage, exc))
+        stream = open(record_dir + "/record_err.txt", "a")
+        stream.write("%d,%s,%s\n" % (time.ticks_ms(), stage, text))
     except Exception:
         pass
+    finally:
+        if stream is not None:
+            try:
+                stream.close()
+            except Exception:
+                pass
+
+
+def log_record_error(stage, exc):
+    """录像异常日志，等价于 log_record_event(stage, str(exc))。"""
+    log_record_event(stage, exc)
 
 
 def record_extension():
@@ -753,7 +772,7 @@ def next_record_path(dir_path):
 
 def start_recording():
     global record_path, record_name, record_stream
-    global recording, record_start_ms, record_is_mjpeg
+    global recording, record_start_ms, record_is_mjpeg, record_frames
     global record_last_write_ms, record_last_sync_ms
     global landed_seen_ms, descent_seen_ms, record_interval_ms
 
@@ -783,9 +802,12 @@ def start_recording():
     record_interval_ms = (RECORD_INTERVAL_MS if use_mjpeg
                           else RECORD_INTERVAL_BIN_MS)
     recording = True
+    record_frames = 0
     record_start_ms = time.ticks_ms()
     record_last_write_ms = None
     record_last_sync_ms = record_start_ms
+    log_record_event("start", "%s fmt=%s" %
+                     (path, "mjpeg" if use_mjpeg else "bin"))
 
     if led is not None:
         led.on()
@@ -793,8 +815,13 @@ def start_recording():
     print("record start:", path)
 
 
-def stop_recording():
+def stop_recording(reason="?"):
     global record_stream, recording
+
+    # 无论哪条路径停，都留下「停的原因 + 已写帧数」。
+    # 零帧就是第一帧都没写进去，跟「写到一半被打断」能区分开。
+    log_record_event("stop", "%s frames=%d reason=%s" %
+                     (record_name, record_frames, reason))
 
     if record_stream is not None:
         try:
@@ -812,7 +839,7 @@ def stop_recording():
 
 
 def update_recording(img):
-    global recording, record_done
+    global recording, record_done, record_frames
     global record_last_write_ms, record_last_sync_ms, record_sync_err
     global record_is_mjpeg, record_fallback_bin, record_interval_ms
 
@@ -833,7 +860,7 @@ def update_recording(img):
 
     now = time.ticks_ms()
     if record_should_stop(now, record_start_ms):
-        stop_recording()
+        stop_recording("should_stop")
         record_done = True
         return
 
@@ -858,6 +885,7 @@ def update_recording(img):
         else:
             record_stream.write(img)
         write_ok = True
+        record_frames += 1
     except Exception:
         # 先 GC 重试一次：对 Python 堆 OOM 有效，对 fb_alloc 不足无效。
         # 再失败就删残片、降级写 .bin，那才是真正能兜住的一层。
@@ -870,6 +898,8 @@ def update_recording(img):
             else:
                 record_stream.write(img)
             write_ok = True
+            record_frames += 1
+            log_record_event("retry", "%s frame=%d ok" % (record_name, record_frames))
             print("[DEBUG] record write retry ok after gc")
         except Exception as e2:
             write_err = e2
@@ -880,7 +910,7 @@ def update_recording(img):
         log_record_error("write", write_err)
         was_mjpeg = record_is_mjpeg
         failed_path = record_path
-        stop_recording()
+        stop_recording("write_fail")
         if was_mjpeg and (not record_fallback_bin):
             # MJPEG 连第一帧都写不进去：这块板子上该格式不可用。
             # 删掉只有文件头的残片，改成 ImageIO 重新开一段，至少能拿到画面。
@@ -1198,7 +1228,7 @@ finally:
     gc.enable()
 
     if recording:
-        stop_recording()
+        stop_recording("exit")
     stop_telemetry_log()
 
     if led is not None:
