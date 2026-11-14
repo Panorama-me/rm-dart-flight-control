@@ -895,20 +895,30 @@ static void run_ascent_stabilization(const INS_t *ins)
 #if DART_ASCENT_PITCH_MODE == DART_PITCH_MODE_LIFT_PID
         else if (pitch_deg >= DART_ASCENT_PITCH_STOP_DEG)
         {
-            /* 策略 1：抬到停止角即完成并锁存。停止角与策略 2 共用同一个参数，
-               把它调到低于 TARGET_DEG 就能提前收手，靠惯性补足剩余角度，
-               避免 PID 一路推到目标角导致过冲。 */
+            /* 策略 1：抬回停止角即完成并锁存。 */
             DartControl.ascent_pitch_done = 1U;
             reset_pid(&DartControl.pitch_pid);
         }
         else
         {
-            /* 策略 1：低头后 PID 闭环控制到目标角。 */
-            float pitch_error = DART_ASCENT_PITCH_TARGET_DEG - pitch_deg;
-            pitch_output = calculate_axis_pid(&DartControl.pitch_pid,
-                                              pitch_error,
-                                              DART_INS_PITCH_RATE_RAD_S(ins));
-            output_pitch_deg = DART_ASCENT_PITCH_TARGET_DEG;
+            /* 策略 1（方案 B）：角度 + 速率串级。
+               先用角度差给出目标低头速率（低于停止角时为负，即希望抬头），
+               再对速率误差做比例控制。低头越快、角度越低，抬头力度越大；
+               反之 gy 变负（抬头过快）时输出转负，自动压低。
+               相比固定 PULL_US，力度随姿态变化，不会出现该刹车时力度不够、
+               该松手时还在推的情况。 */
+            float rate_cmd = DART_ASCENT_PITCH_RATE_GAIN *
+                             (pitch_deg - DART_ASCENT_PITCH_STOP_DEG);
+            float rate_now;
+            float rate_err;
+
+            rate_cmd = constrain_float(rate_cmd,
+                                       -DART_ASCENT_PITCH_MAX_RATE,
+                                       DART_ASCENT_PITCH_MAX_RATE);
+            rate_now = -DART_INS_PITCH_RATE_RAD_S(ins) * DART_RAD_TO_DEG;
+            rate_err = rate_cmd - rate_now;
+            pitch_output = -DART_ASCENT_PITCH_RATE_KD * rate_err;
+            output_pitch_deg = DART_ASCENT_PITCH_STOP_DEG;
         }
 #else
         else if (pitch_deg >= DART_ASCENT_PITCH_STOP_DEG)
