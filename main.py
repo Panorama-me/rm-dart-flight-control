@@ -66,6 +66,9 @@ OVERLAY_LEVEL = 1
 GC_COLLECT_INTERVAL = 20
 # JPEG 编码前要求的最小空闲堆字节数。低于此值先强制回收一次再写。
 JPEG_MIN_FREE_BYTES = 28000
+# 降级到 ImageIO(.bin) 后的写间隔。原始帧 150 KB，按 21 fps 写要 3.1 MB/s，
+# 会把主循环拖死；100 ms 即 10 fps，约 1.5 MB/s，能接受。
+RECORD_INTERVAL_BIN_MS = 100
 
 # 模式：由下位机握手决定
 MODE_DEFAULT = 0
@@ -94,7 +97,7 @@ mode = MODE_BOTH
 # =========================
 BLOB_ROI = (0, 0, 320, 240)  # snapshot 输出画面；动态 cur_roi 只限制识别搜索
 INIT_ROI = (0, 0, 320, 240)
-READOUT_ROI = (0, 0, 1280, 960)  # 传感器读出窗口，决定取景范围和放大效果
+READOUT_ROI = (0, 700, 1280, 960)  # 传感器读出窗口，决定取景范围和放大效果
 FOUND_RANGE_X = 40
 FOUND_RANGE_Y = 40
 THRESHOLDS1 = [(9, 100, -102, -25, 0, 127)]
@@ -547,6 +550,8 @@ record_is_mjpeg = False
 # MJPEG 写入失败过一次后置 True，之后一律用 ImageIO 写 .bin。
 # 这样即使 mjpeg 模块在这块板子上有问题，也还能拿到原始帧。
 record_fallback_bin = False
+# 实际使用的写间隔：MJPEG 用 RECORD_INTERVAL_MS，降级后换成 RECORD_INTERVAL_BIN_MS
+record_interval_ms = RECORD_INTERVAL_MS
 record_done = False
 record_start_ms = None
 record_last_write_ms = None
@@ -750,7 +755,7 @@ def start_recording():
     global record_path, record_name, record_stream
     global recording, record_start_ms, record_is_mjpeg
     global record_last_write_ms, record_last_sync_ms
-    global landed_seen_ms, descent_seen_ms
+    global landed_seen_ms, descent_seen_ms, record_interval_ms
 
     if not RECORD_ENABLE or record_dir is None:
         return
@@ -775,6 +780,8 @@ def start_recording():
     record_path = path
     record_name = path.split("/")[-1]
     record_is_mjpeg = use_mjpeg
+    record_interval_ms = (RECORD_INTERVAL_MS if use_mjpeg
+                          else RECORD_INTERVAL_BIN_MS)
     recording = True
     record_start_ms = time.ticks_ms()
     record_last_write_ms = None
@@ -807,7 +814,7 @@ def stop_recording():
 def update_recording(img):
     global recording, record_done
     global record_last_write_ms, record_last_sync_ms, record_sync_err
-    global record_is_mjpeg, record_fallback_bin
+    global record_is_mjpeg, record_fallback_bin, record_interval_ms
 
     if not RECORD_ENABLE:
         return
@@ -830,8 +837,8 @@ def update_recording(img):
         record_done = True
         return
 
-    if (RECORD_INTERVAL_MS > 0 and record_last_write_ms is not None and
-            time.ticks_diff(now, record_last_write_ms) < RECORD_INTERVAL_MS):
+    if (record_interval_ms > 0 and record_last_write_ms is not None and
+            time.ticks_diff(now, record_last_write_ms) < record_interval_ms):
         return
     # JPEG 编码要临时缓冲区。GC 关闭期间堆容易碎片化，
     # 表现为 mjpeg 抛 "Compression Failed!"。写之前先看一眼余量。
