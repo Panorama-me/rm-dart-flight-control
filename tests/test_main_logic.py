@@ -84,6 +84,13 @@ class FakeMjpeg:
         self.closed = True
 
 
+class FailingMjpeg(FakeMjpeg):
+    """模拟 mjpeg 模块在这块板子上写不进去的情况。"""
+
+    def write(self, img, quality=60):
+        raise OSError("mjpeg write unsupported")
+
+
 class FakeTextFile:
     instances = []
 
@@ -296,6 +303,25 @@ class MainLogicTest(unittest.TestCase):
         ns["update_recording"](object())
         self.assertTrue(stream.closed)
         self.assertTrue(ns["record_done"])
+
+    def test_mjpeg_write_failure_falls_back_to_imageio(self):
+        """MJPEG 连第一帧都写不进去时，自动降级到 ImageIO，至少能拿到画面。"""
+        ns, fake_time, _ = load_logic()
+        ns["record_dir"] = "/sdcard"
+        ns["mjpeg"] = types.SimpleNamespace(Mjpeg=FailingMjpeg)
+        ns["flight_seen"] = True
+
+        ns["update_recording"](object())
+
+        self.assertTrue(ns["record_fallback_bin"])
+        self.assertTrue(ns["recording"])
+        self.assertEqual(len(FakeImageIO.instances), 1)
+        self.assertTrue(FakeImageIO.instances[0].path.endswith(".bin"))
+
+        # 降级后的下一帧应该能正常写入
+        fake_time.now = 100
+        ns["update_recording"](object())
+        self.assertEqual(FakeImageIO.instances[0].frames, 1)
 
     def test_second_flight_clears_previous_landed_flag(self):
         """落地后再次起飞必须清掉上一轮的 landed_seen_ms。

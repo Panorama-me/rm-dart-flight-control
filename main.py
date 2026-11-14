@@ -539,6 +539,9 @@ record_name = None
 record_stream = None
 recording = False
 record_is_mjpeg = False
+# MJPEG 写入失败过一次后置 True，之后一律用 ImageIO 写 .bin。
+# 这样即使 mjpeg 模块在这块板子上有问题，也还能拿到原始帧。
+record_fallback_bin = False
 record_done = False
 record_start_ms = None
 record_last_write_ms = None
@@ -693,8 +696,28 @@ def pick_record_dir():
     return None
 
 
+def log_record_error(stage, exc):
+    """把录像异常写进 SD 卡上的文本文件。
+
+    现场往往没有串口，print 出来的信息会丢。写到卡上，飞完插电脑就能看到。
+    """
+    if record_dir is None:
+        return
+    try:
+        with open(record_dir + "/record_err.txt", "a") as f:
+            f.write("%d,%s,%s\n" % (time.ticks_ms(), stage, exc))
+    except Exception:
+        pass
+
+
 def record_extension():
-    """当前录像扩展名：MJPEG 可直接播，原生流需要导出。"""
+    """当前录像扩展名：MJPEG 可直接播，原生流需要导出。
+
+    降级后必须返回 .bin，否则会用 ImageIO 写出一个扩展名叫 .mjpeg、
+    内容却是原始 RGB565 的文件，播放器和导出脚本都会认错。
+    """
+    if record_fallback_bin:
+        return ".bin"
     return ".mjpeg" if (RECORD_USE_MJPEG and mjpeg is not None) else ".bin"
 
 
@@ -734,11 +757,13 @@ def start_recording():
     descent_seen_ms = None
 
     path = next_record_path(record_dir)
-    use_mjpeg = record_extension() == ".mjpeg"
+    # 降级后强制走 ImageIO，不再尝试 mjpeg
+    use_mjpeg = (record_extension() == ".mjpeg") and (not record_fallback_bin)
     try:
         stream = mjpeg.Mjpeg(path) if use_mjpeg else image.ImageIO(path, "w")
     except Exception as e:
         print("[DEBUG] record open fail:", e)
+        log_record_error("open", e)
         return
 
     record_stream = stream
@@ -777,7 +802,7 @@ def stop_recording():
 def update_recording(img):
     global recording, record_done
     global record_last_write_ms, record_last_sync_ms, record_sync_err
-    global record_is_mjpeg
+    global record_is_mjpeg, record_fallback_bin
 
     if not RECORD_ENABLE:
         return
@@ -813,7 +838,21 @@ def update_recording(img):
     except Exception as e:
         # 只有真正写不进去才放弃：写失败会破坏 MJPEG 流，重试没有意义。
         print("[DEBUG] record write err:", e)
+        log_record_error("write", e)
+        was_mjpeg = record_is_mjpeg
+        failed_path = record_path
         stop_recording()
+        if was_mjpeg and (not record_fallback_bin):
+            # MJPEG 连第一帧都写不进去：这块板子上该格式不可用。
+            # 删掉只有文件头的残片，改成 ImageIO 重新开一段，至少能拿到画面。
+            record_fallback_bin = True
+            try:
+                os.remove(failed_path)
+            except Exception:
+                pass
+            print("[DEBUG] mjpeg unusable, falling back to ImageIO")
+            start_recording()
+            return
         record_done = True
         return
 
