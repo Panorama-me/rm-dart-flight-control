@@ -242,7 +242,7 @@ extern "C" {
    判据是 |视线偏航角| 变小：越接近 0 说明目标越靠近画面中心，此时的 yaw 就是目标方位。
    只记录 yaw、不参与视线角的加减，因此不存在符号歧义。
    1 = 启用（0则保持原行为：脱锁后回发射航向）。 */
-#define DART_YAW_ABS_LOCK_ENABLE                 1U
+#define DART_YAW_ABS_LOCK_ENABLE                 0U
 /* 更新最佳航向需要的改进量（度）。防止噪声尖峰把锁定角钉在错误位置：
    只有 |视线角| 比历史最优值再小 0.15 度才更新。 */
 #define DART_YAW_BEST_MARGIN_DEG                0.15f
