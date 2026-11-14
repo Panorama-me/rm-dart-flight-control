@@ -225,7 +225,7 @@ extern "C" {
 #define DART_LAUNCH_CONFIRM_COUNT                5U                  /* 连续超过阈值次数确认起飞 */
 
 /* ------------------------------ 上升段 ---------------------------------- */
-#define DART_ASCENT_PITCH_TARGET_DEG          (23.0f)               /* 阶段1/2 分界角：pitch 跌破此值转入阶段2 */
+#define DART_ASCENT_PITCH_TARGET_DEG          (30.0f)               /* 阶段1/2 分界角：pitch 跌破此值转入阶段2 */
 /* 阶段1：pitch 尚未低于目标角时输出固定抬升量，抵消发射低头。
    阶段2：角度低于目标后按 LIFT_PID / LIFT_BANG 各自的策略回目标角。
    阶段3：到达目标或进入下降段即停止补偿。 */
@@ -257,7 +257,7 @@ extern "C" {
    接近目标时速率自动减小，到达即稳定（gyro ≈ 0），不会过冲。 */
 #define DART_GLIDE_PITCH_DEG                (-35.0f)   /* 基准滑翔俯仰角（度） */
 #define DART_GLIDE_RATE_GAIN                  1.0f     /* 每度偏差对应的目标角速率（1/秒） */
-#define DART_GLIDE_MAX_RATE                  35.0f     /* 最大低头速率（度/秒），决定收敛时间 */
+#define DART_GLIDE_MAX_RATE                  50.0f     /* 最大低头速率（度/秒），决定收敛时间 */
 #define DART_GLIDE_RATE_KD                    2.5f     /* 速率环增益（微秒 / (度/秒)） */
 
 /* ------------------------------ 落地检测 -------------------------------- */
@@ -325,11 +325,11 @@ extern "C" {
    同样的像素偏移对应的角度约为全幅（237 px）的 1/2；
    若跟踪偏慢，优先按比例增大 DART_*_VISION_KP。 */
 #define DART_YAW_VISION_KP                       20.0f
-#define DART_YAW_VISION_KI                       3.0f
+#define DART_YAW_VISION_KI                       0.0f
 #define DART_YAW_VISION_KD                       3.5f
 #define DART_PITCH_VISION_KP                     20.0f
 #define DART_PITCH_VISION_KI                     0.01f
-#define DART_PITCH_VISION_KD                     3.00f
+#define DART_PITCH_VISION_KD                     2.00f
 
 /* 上升段 pitch 策略，由 DART_ASCENT_PITCH_MODE 编译期选择：
      0 HOLD      : 不补偿也不自稳，pitch 输出恒为 0；

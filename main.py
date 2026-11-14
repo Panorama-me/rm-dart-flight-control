@@ -722,9 +722,16 @@ def start_recording():
     global record_path, record_name, record_stream
     global recording, record_start_ms, record_is_mjpeg
     global record_last_write_ms, record_last_sync_ms
+    global landed_seen_ms, descent_seen_ms
 
     if not RECORD_ENABLE or record_dir is None:
         return
+
+    # 开录前清掉上一轮的落地/下降标志。起飞分支已经清过一次，
+    # 这里再兜一层：任何路径走到 start_recording 都从干净状态开始，
+    # 保证 record_should_stop 不会拿旧时间戳在第一帧之前就把录像掐掉。
+    landed_seen_ms = None
+    descent_seen_ms = None
 
     path = next_record_path(record_dir)
     use_mjpeg = record_extension() == ".mjpeg"
