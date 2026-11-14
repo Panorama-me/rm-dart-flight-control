@@ -734,8 +734,7 @@ static float yaw_unlock_output(const INS_t *ins)
     if (DartControl.yaw_best_valid)
     {
         float error = wrap_180(DartControl.yaw_best_deg - ins->Yaw);
-        return DART_DESCENT_YAW_OUTPUT_SIGN *
-               calculate_axis_pid(&DartControl.yaw_vision_pid, error,
+        return calculate_axis_pid(&DartControl.yaw_vision_pid, error,
                                   DART_INS_YAW_RATE_RAD_S(ins));
     }
 #endif
@@ -809,8 +808,9 @@ static float vision_yaw_command(const INS_t *ins)
     float camera_yaw_command;
     float roll_rad;
 
-    camera_yaw_rate = DART_CAMERA_YAW_SIGN *
-                      (DartControl.vision_x_ekf.rate +
+    /* 相机项先转进 INS yaw 系，机体角速率本来就在 INS 系，直接相加。
+       两者必须同系才能相加，否则机体转动补偿会被反号、变成加倍。 */
+    camera_yaw_rate = (DART_CAMERA_YAW_SIGN * DartControl.vision_x_ekf.rate +
                        DART_INS_YAW_RATE_RAD_S(ins)) * DART_RAD_TO_DEG;
     camera_yaw_rate = constrain_float(camera_yaw_rate,
                                       -DART_LOS_RATE_LIMIT_DEG_S,
@@ -857,7 +857,6 @@ static void run_ascent_stabilization(const INS_t *ins)
 
         yaw_command_deg = vision_yaw_command(ins);
         DartControl.telemetry.yaw_output_us =
-            DART_ASCENT_VISION_YAW_OUTPUT_SIGN *
             calculate_axis_pid(&DartControl.yaw_vision_pid, yaw_command_deg,
                                DART_INS_YAW_RATE_RAD_S(ins));
         /* 等效目标 yaw = 当前 yaw + 视觉修正角。 */
@@ -1055,7 +1054,6 @@ static void run_descent_guidance(const INS_t *ins)
             DartControl.telemetry.yaw_output_us = 0.0f;
             if (DART_MODE != DART_MODE_PITCH)
                 DartControl.telemetry.yaw_output_us =
-                    DART_DESCENT_YAW_OUTPUT_SIGN *
                     calculate_axis_pid(&DartControl.yaw_vision_pid,
                                        DartControl.telemetry.target_yaw_deg,
                                        DART_INS_YAW_RATE_RAD_S(ins));
@@ -1113,8 +1111,9 @@ static void run_descent_guidance(const INS_t *ins)
     DartControl.descent_target_seen = 1U;
 
     /* 计算相机坐标系下的视线角速率（补偿机体角速率） */
-    camera_yaw_rate = DART_CAMERA_YAW_SIGN *
-                      (DartControl.vision_x_ekf.rate +
+    /* 相机项先转进 INS yaw 系，机体角速率本来就在 INS 系，直接相加。
+       两者必须同系才能相加，否则机体转动补偿会被反号、变成加倍。 */
+    camera_yaw_rate = (DART_CAMERA_YAW_SIGN * DartControl.vision_x_ekf.rate +
                        DART_INS_YAW_RATE_RAD_S(ins)) * DART_RAD_TO_DEG;
     /* 像素速率取相机 Y 轴；俯仰约定取反后，机体俯仰角速率与之符号相反。 */
     camera_pitch_rate = DART_CAMERA_PITCH_SIGN *
@@ -1170,7 +1169,6 @@ static void run_descent_guidance(const INS_t *ins)
     DartControl.telemetry.yaw_output_us = 0.0f;
     if (DART_MODE != DART_MODE_PITCH)
         DartControl.telemetry.yaw_output_us =
-            DART_DESCENT_YAW_OUTPUT_SIGN *
             calculate_axis_pid(&DartControl.yaw_vision_pid, yaw_command,
                                DART_INS_YAW_RATE_RAD_S(ins));
 
@@ -1203,8 +1201,7 @@ static void run_debug_guidance(const INS_t *ins)
 
     if (DartControl.telemetry.vision.valid)
     {
-        camera_yaw_rate = DART_CAMERA_YAW_SIGN *
-                          (DartControl.vision_x_ekf.rate +
+        camera_yaw_rate = (DART_CAMERA_YAW_SIGN * DartControl.vision_x_ekf.rate +
                            DART_INS_YAW_RATE_RAD_S(ins)) * DART_RAD_TO_DEG;
         camera_pitch_rate = DART_CAMERA_PITCH_SIGN *
                             (DartControl.vision_y_ekf.rate -
@@ -1246,7 +1243,6 @@ static void run_debug_guidance(const INS_t *ins)
     if (DartControl.telemetry.vision.valid)
     {
         DartControl.telemetry.yaw_output_us =
-            DART_DESCENT_YAW_OUTPUT_SIGN *
             calculate_axis_pid(&DartControl.yaw_vision_pid, yaw_command,
                                DART_INS_YAW_RATE_RAD_S(ins));
         DartControl.telemetry.pitch_output_us =

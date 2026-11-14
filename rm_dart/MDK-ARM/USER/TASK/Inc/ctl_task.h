@@ -248,7 +248,8 @@ extern "C" {
 #define DART_YAW_BEST_MARGIN_DEG                0.15f
 /* 脱锁判据：连续丢失的视觉帧数达到此值即切脱锁锁定，不再等
    DART_TARGET_LOST_HOLD_MS 的 120 ms 超时。按 26 fps 算：
-   2 帧 ≈ 77 ms；调成 1 则丢一帧就切（约 38 ms）。
+   2 帧 ≈ 77 ms；调成 1 则丢一帧就切（约 38 ms）。+
+	 
    注意：帧数按视觉帧累计，不是 2 ms 的控制周期。 */
 #define DART_DESCENT_UNLOCK_LOST_FRAMES          2U
 /* 滑翔速率环：不直接给目标角，而是控制「低头速率」，让 pitch 缓慢逼近基准角。
@@ -281,14 +282,10 @@ extern "C" {
 #define DART_LOS_RATE_LIMIT_DEG_S         15.0f   /* 视线角速率限幅（度/秒）；与 LEAD_TIME 相乘应略小于 LEAD_MAX */
 #define DART_LEAD_COMMAND_LIMIT_DEG       10.0f   /* 总指令限幅（度），应小于半视场 */
 
-/* 下降段引导输出反向力矩：只影响 DESCENT 的 pitch/yaw PID 输出 */
-#define DART_DESCENT_YAW_OUTPUT_SIGN     (-1.0f)
+/* 下降段引导输出反向力矩：只影响 DESCENT 的 pitch PID 输出。
+   yaw 没有这个符号——视觉 yaw 与上升段自稳走完全相同的输出路径，
+   坐标系差异统一由 DART_CAMERA_YAW_SIGN 一处负责。 */
 #define DART_DESCENT_PITCH_OUTPUT_SIGN   (-1.0f)
-
-
-/* 上升段视觉 yaw 输出符号：视觉只控 yaw，默认与下降段视觉输出一致。
-   实机上若 yaw 朝目标反方向转，优先单独修改这里。 */
-#define DART_ASCENT_VISION_YAW_OUTPUT_SIGN (-1.0f)
 
 /* -------------------------------- PID 调参 ----------------------------- */
 #define DART_PID_MAX_OUTPUT_US                  420.0f               /* PID 输出限幅（微秒） */
@@ -367,7 +364,17 @@ extern "C" {
 /* ------------------------------ 轴向校准 ------------------------------- */
 /* 轴向校准：符号与坐标映射 */
 #define DART_LAUNCH_X_SIGN                        1.0f               /* 起飞加速度 X 轴符号 */
-#define DART_CAMERA_YAW_SIGN                      1.0f               /* 相机偏航角符号 */
+/* 相机偏航角 -> INS yaw 系的符号。
+   本机 IMU 的 pitch/roll 互换且带负号（见 DART_SWAP_INS_PITCH_ROLL），
+   INS 的 yaw 轴整体与机体反向：yaw_ins = -psi，gz = -psi_dot。
+   相机是正向安装的（画面右 = 机体右），所以相机角度必须取反才能进入
+   INS 系，与 yaw_ins / gz 同号。11.14 录像实测相邻帧 dX/dyaw_ins =
+   +1.08 / +0.79（正常相机应为 -1），确认反向。
+
+   全系统只保留这一处 yaw 符号：视觉误差、视线角速率、PID 输出都不再
+   单独乘符号，与上升段 calculate_yaw_hold 的结构完全一致。
+   台架若发现 yaw 朝目标反方向转，只改这一处。 */
+#define DART_CAMERA_YAW_SIGN                     (-1.0f)
 #define DART_CAMERA_PITCH_SIGN                   1.0f               /* 与取反后的机体俯仰角一致 */
 #define DART_ROLL_OUTPUT_SIGN                     -1.0f               /* 横滚输出符号 */
 #define DART_PITCH_OUTPUT_SIGN                     1.0f               /* 坐标取反后保持原舵机方向 */
