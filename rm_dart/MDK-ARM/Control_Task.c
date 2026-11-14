@@ -893,9 +893,14 @@ static void run_ascent_stabilization(const INS_t *ins)
             output_pitch_deg = DART_ASCENT_PITCH_TARGET_DEG;
         }
 #if DART_ASCENT_PITCH_MODE == DART_PITCH_MODE_LIFT_PID
-        else if (pitch_deg >= DART_ASCENT_PITCH_STOP_DEG)
+        else if (DartControl.ascent_pitch_below_stop &&
+                 pitch_deg >= DART_ASCENT_PITCH_STOP_DEG)
         {
-            /* 策略 1：抬回停止角即完成并锁存。 */
+            /* 策略 1：阶段2 已把机头从下方抬回停止角，补偿完成并锁存。
+               必须额外要求「阶段2 曾经低于停止角」。否则发射后低头穿过
+               停止角到目标角之间的区间时，会在同一周期直接锁存，阶段2
+               一次都不执行——11.14 的 00005~00014 就是这个现象：目标角
+               从 23 改成 30 之后阶段2 帧数为 0，整个上升段俯仰通道恒 0。 */
             DartControl.ascent_pitch_done = 1U;
             reset_pid(&DartControl.pitch_pid);
         }
@@ -908,11 +913,16 @@ static void run_ascent_stabilization(const INS_t *ins)
                与舵面正方向（抬头为正）一致，输出端不用再取反。
                力度随姿态连续变化：低头越快、角度越低，抬头越狠；gy 转负时输出也转负，
                自动压低。相比固定 PULL_US，不会出现该刹车时力度不够、该松手时还在推。 */
-            float rate_cmd = DART_ASCENT_PITCH_RATE_GAIN *
-                             (pitch_deg - DART_ASCENT_PITCH_STOP_DEG);
+            float rate_cmd;
             float rate_now;
             float rate_err;
 
+            /* 先记录「已进入停止角以下」，阶段2 抬回 23 度后据此判定完成。 */
+            if (pitch_deg < DART_ASCENT_PITCH_STOP_DEG)
+                DartControl.ascent_pitch_below_stop = 1U;
+
+            rate_cmd = DART_ASCENT_PITCH_RATE_GAIN *
+                       (pitch_deg - DART_ASCENT_PITCH_STOP_DEG);
             rate_cmd = constrain_float(rate_cmd,
                                        -DART_ASCENT_PITCH_MAX_RATE,
                                        DART_ASCENT_PITCH_MAX_RATE);
@@ -1740,6 +1750,7 @@ void control_Task(void)
             DartControl.pitch_sum = 0.0f;
             DartControl.ascent_pitch_done = 0U;
             DartControl.ascent_pitch_below_target = 0U;
+            DartControl.ascent_pitch_below_stop = 0U;
             DartControl.ascent_roll_done = 0U;
             DartControl.ascent_roll_below_target = 0U;
             DartControl.ascent_vision_yaw_active = 0U;

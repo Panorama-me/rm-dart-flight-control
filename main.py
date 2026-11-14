@@ -97,7 +97,7 @@ mode = MODE_BOTH
 # =========================
 BLOB_ROI = (0, 0, 320, 240)  # snapshot 输出画面；动态 cur_roi 只限制识别搜索
 INIT_ROI = (0, 0, 320, 240)
-READOUT_ROI = (0, 700, 1280, 960)  # 传感器读出窗口，决定取景范围和放大效果
+READOUT_ROI = (0, 0, 1280, 960)  # 传感器读出窗口，决定取景范围和放大效果
 FOUND_RANGE_X = 40
 FOUND_RANGE_Y = 40
 THRESHOLDS1 = [(9, 100, -102, -25, 0, 127)]

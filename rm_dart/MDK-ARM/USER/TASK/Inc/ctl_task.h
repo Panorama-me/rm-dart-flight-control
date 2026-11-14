@@ -256,8 +256,8 @@ extern "C" {
    舵面 = RATE_KD × (期望速率 - 实际速率)。
    接近目标时速率自动减小，到达即稳定（gyro ≈ 0），不会过冲。 */
 #define DART_GLIDE_PITCH_DEG                (-35.0f)   /* 基准滑翔俯仰角（度） */
-#define DART_GLIDE_RATE_GAIN                  1.0f     /* 每度偏差对应的目标角速率（1/秒） */
-#define DART_GLIDE_MAX_RATE                  50.0f     /* 最大低头速率（度/秒），决定收敛时间 */
+#define DART_GLIDE_RATE_GAIN                  4.0f     /* 每度偏差对应的目标角速率（1/秒） */
+#define DART_GLIDE_MAX_RATE                  80.0f     /* 最大低头速率（度/秒），决定收敛时间 */
 #define DART_GLIDE_RATE_KD                    2.5f     /* 速率环增益（微秒 / (度/秒)） */
 
 /* ------------------------------ 落地检测 -------------------------------- */
@@ -328,8 +328,8 @@ extern "C" {
 #define DART_YAW_VISION_KI                       0.0f
 #define DART_YAW_VISION_KD                       3.5f
 #define DART_PITCH_VISION_KP                     20.0f
-#define DART_PITCH_VISION_KI                     0.01f
-#define DART_PITCH_VISION_KD                     2.00f
+#define DART_PITCH_VISION_KI                     0.00f
+#define DART_PITCH_VISION_KD                     3.00f
 
 /* 上升段 pitch 策略，由 DART_ASCENT_PITCH_MODE 编译期选择：
      0 HOLD      : 不补偿也不自稳，pitch 输出恒为 0；
@@ -519,6 +519,7 @@ typedef struct
     float pitch_sum;                        /* 俯仰角累加，用于算术平均 */
     uint8_t ascent_pitch_done;              /* 本次起飞的 pitch 补偿已停止 */
     uint8_t ascent_pitch_below_target;      /* 当前 pitch 曾低于补偿目标（固定抬升转为 PID 闭环） */
+    uint8_t ascent_pitch_below_stop;        /* 阶段2 曾把 pitch 压到停止角以下，用于判定补偿完成 */
     uint8_t ascent_roll_done;               /* 本次起飞的 roll 补偿已停止 */
     uint8_t ascent_roll_below_target;       /* 当前 roll 曾低于补偿目标（固定抬升转为 PID 闭环） */
     uint8_t ascent_vision_yaw_active;       /* 上升段当前由视觉控制 yaw（脱锁后回自稳） */
