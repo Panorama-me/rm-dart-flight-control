@@ -225,7 +225,7 @@ extern "C" {
 #define DART_LAUNCH_CONFIRM_COUNT                5U                  /* 连续超过阈值次数确认起飞 */
 
 /* ------------------------------ 上升段 ---------------------------------- */
-#define DART_ASCENT_PITCH_TARGET_DEG          (30.0f)               /* 使用取反后的机体俯仰角，保持原物理目标 */
+#define DART_ASCENT_PITCH_TARGET_DEG          (30.0f)               /* 阶段1/2 分界角，同时是 LIFT_PID 的目标角 */
 /* 阶段1：pitch 尚未低于目标角时输出固定抬升量，抵消发射低头。
    阶段2：角度低于目标后按 LIFT_PID / LIFT_BANG 各自的策略回目标角。
    阶段3：到达目标或进入下降段即停止补偿。 */
@@ -305,9 +305,9 @@ extern "C" {
 #define DART_YAW_KI                               0.00f               /* 偏航 PID 积分系数 */
 /* Kd 的单位是“微秒 /（度/秒）”，符号需在实机上确认。 */
 #define DART_YAW_KD                               1.5f              /* 偏航 PID 微分系数 */
-#define DART_PITCH_KP                            20.0f               /* 俯仰 PID 比例系数 */
+#define DART_PITCH_KP                            10.0f               /* 俯仰 PID 比例系数 */
 #define DART_PITCH_KI                             0.0f               /* 俯仰 PID 积分系数 */
-#define DART_PITCH_KD                             1.5f              /* 俯仰 PID 微分系数 */
+#define DART_PITCH_KD                             2.5f              /* 俯仰 PID 微分系数 */
 #define DART_ROLL_KP                             10.0f               /* 横滚 PID 比例系数 */
 #define DART_ROLL_KI                              0.00f               /* 横滚 PID 积分系数 */
 #define DART_ROLL_KD                              1.0f    
@@ -333,17 +333,19 @@ extern "C" {
 
 /* 上升段 pitch 策略，由 DART_ASCENT_PITCH_MODE 编译期选择：
      0 HOLD      : 不补偿也不自稳，pitch 输出恒为 0；
-     1 LIFT_PID  : 固定抬升到低头，再 PID 闭环回目标角；
+     1 LIFT_PID  : 固定抬升到低头，再 PID 闭环回目标角，抬到停止角即完成；
      2 LIFT_BANG : 固定抬升到低头，再固定抬头到停止角，之后输出 0，全程开环。 */
 #define DART_PITCH_MODE_HOLD                    0U
 #define DART_PITCH_MODE_LIFT_PID                1U
 #define DART_PITCH_MODE_LIFT_BANG               2U
 #ifndef DART_ASCENT_PITCH_MODE
-#define DART_ASCENT_PITCH_MODE                  DART_PITCH_MODE_LIFT_BANG
+#define DART_ASCENT_PITCH_MODE                  DART_PITCH_MODE_LIFT_PID
 #endif
-/* 仅 LIFT_BANG 使用：阶段2 的固定抬头输出与停止角 */
+/* 阶段2 参数。PULL_US 仅 LIFT_BANG 使用；STOP_DEG 两种策略共用：
+   LIFT_BANG 拿它当固定抬头的终止角，LIFT_PID 拿它当停止判据。
+   把它调到低于 TARGET_DEG 就能提前收手，靠惯性补足剩余角度，减小过冲。 */
 #define DART_ASCENT_PITCH_PULL_US               110.0f  /* 阶段2 固定抬头输出（微秒）；对齐 11.12-15 实测 */
-#define DART_ASCENT_PITCH_STOP_DEG              30.0f   /* 抬头到此角度即停止补偿（度） */
+#define DART_ASCENT_PITCH_STOP_DEG              30.0f   /* 抬头到此角度即停止补偿（度）；两种策略共用 */
 #define DART_ASCENT_ROLL_COMPENSATION_ENABLE    0U      /* 1: 启用 roll 初始补偿，0: 走 roll 自稳 */
 #define DART_ASCENT_ROLL_TARGET_DEG             0.0f    /* roll 补偿目标角（度） */
 #define DART_ASCENT_ROLL_LIFT_US                100.0f  /* roll 固定抬升输出（微秒），符号需实机确认 */

@@ -893,9 +893,11 @@ static void run_ascent_stabilization(const INS_t *ins)
             output_pitch_deg = DART_ASCENT_PITCH_TARGET_DEG;
         }
 #if DART_ASCENT_PITCH_MODE == DART_PITCH_MODE_LIFT_PID
-        else if (pitch_deg >= DART_ASCENT_PITCH_TARGET_DEG)
+        else if (pitch_deg >= DART_ASCENT_PITCH_STOP_DEG)
         {
-            /* 策略 1：从下方回到目标角，补偿完成并锁存。 */
+            /* 策略 1：抬到停止角即完成并锁存。停止角与策略 2 共用同一个参数，
+               把它调到低于 TARGET_DEG 就能提前收手，靠惯性补足剩余角度，
+               避免 PID 一路推到目标角导致过冲。 */
             DartControl.ascent_pitch_done = 1U;
             reset_pid(&DartControl.pitch_pid);
         }

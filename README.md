@@ -159,7 +159,7 @@ flags：bit0 视觉链路有效、bit1 目标有效、bit2 IMU 就绪、bit3 握
 | 起飞加速度阈值 | 22.0 m/s²，连续 5 周期 | `DART_LAUNCH_ACCEL_THRESHOLD` |
 | 起飞姿态采样 | 5 帧，yaw 圆均值 | `DART_LAUNCH_ATTITUDE_SAMPLE_COUNT` |
 | 上升 pitch 目标 | +30°（映射后角度） | `DART_ASCENT_PITCH_TARGET_DEG` |
-| 上升 pitch 策略 | LIFT_BANG：硬抬升 → 固定抬头 → 输出 0，全程开环；阶段1 仅以 pitch 跌破目标角退出 | `DART_ASCENT_PITCH_*` |
+| 上升 pitch 策略 | LIFT_PID：硬抬升 → PID 回目标角 → 抬到停止角即锁存；`STOP_DEG` 与 BANG 共用，调低可提前收手 | `DART_ASCENT_PITCH_*` |
 | 下降判据 | 映射后 pitch < 5°，连续 25 周期，且已上升 300 ms | `DART_DESCENT_PITCH_THRESHOLD_DEG` |
 | 前视时间 / 前视限幅 | 0.20 s / ±3.0° | `DART_LEAD_TIME_S`、`DART_LEAD_MAX_DEG` |
 | 视线角速率 / 指令限幅 | ±15 °/s、±10°（死区 1.0 °/s、低通 55 ms） | `DART_LOS_RATE_LIMIT_DEG_S`、`DART_LEAD_COMMAND_LIMIT_DEG` |
