@@ -297,6 +297,43 @@ class MainLogicTest(unittest.TestCase):
         self.assertTrue(stream.closed)
         self.assertTrue(ns["record_done"])
 
+    def test_second_flight_clears_previous_landed_flag(self):
+        """落地后再次起飞必须清掉上一轮的 landed_seen_ms。
+
+        否则 record_should_stop 会拿上一轮的落地时间戳立即返回 True，
+        录像只写出文件头（约 1 KB）就结束。
+        """
+        ns, fake_time, uart = load_logic()
+        ns["record_dir"] = "/sdcard"
+
+        # 第一轮：起飞 -> 落地 -> 停止
+        fake_time.now = 100
+        uart.rx.extend(frame(ns, 0, 0, 0, ns["STATE_ASCENT"]))
+        ns["poll_telemetry"]()
+        ns["update_recording"](object())
+        self.assertTrue(ns["recording"])
+
+        fake_time.now = 2000
+        uart.rx.extend(frame(ns, 0, 0, 0, ns["STATE_LANDED"]))
+        ns["poll_telemetry"]()
+        fake_time.now = 2000 + ns["LANDED_RECORD_TAIL_MS"] + 1
+        ns["update_recording"](object())
+        self.assertFalse(ns["recording"])
+        self.assertTrue(ns["record_done"])
+        self.assertIsNotNone(ns["landed_seen_ms"])
+
+        # 第二轮：重新起飞，落地标志与 record_done 都要复位
+        fake_time.now = 5000
+        uart.rx.extend(frame(ns, 0, 0, 0, ns["STATE_ASCENT"]))
+        ns["poll_telemetry"]()
+        self.assertIsNone(ns["landed_seen_ms"])
+        self.assertIsNone(ns["descent_seen_ms"])
+        self.assertFalse(ns["record_done"])
+
+        ns["update_recording"](object())
+        self.assertTrue(ns["recording"])
+        self.assertEqual(len(FakeImageIO.instances), 2)
+
     def test_recording_stops_after_landed_flag(self):
         """落地标志优先于 3 s 兜底：落地早于 3 s 时必须提前停。"""
         ns, fake_time, uart = load_logic()

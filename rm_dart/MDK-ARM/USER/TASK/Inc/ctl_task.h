@@ -255,7 +255,7 @@ extern "C" {
    期望速率 = GAIN × (当前角 - 目标角)，限幅 ±MAX_RATE；
    舵面 = RATE_KD × (期望速率 - 实际速率)。
    接近目标时速率自动减小，到达即稳定（gyro ≈ 0），不会过冲。 */
-#define DART_GLIDE_PITCH_DEG                (-30.0f)   /* 基准滑翔俯仰角（度） */
+#define DART_GLIDE_PITCH_DEG                (-35.0f)   /* 基准滑翔俯仰角（度） */
 #define DART_GLIDE_RATE_GAIN                  1.0f     /* 每度偏差对应的目标角速率（1/秒） */
 #define DART_GLIDE_MAX_RATE                  35.0f     /* 最大低头速率（度/秒），决定收敛时间 */
 #define DART_GLIDE_RATE_KD                    2.5f     /* 速率环增益（微秒 / (度/秒)） */
@@ -345,6 +345,7 @@ extern "C" {
    LIFT_BANG 拿它当固定抬头的终止角，LIFT_PID 拿它当停止判据与速率环的角度基准。
    调低 STOP_DEG 可提前收手，靠惯性补足剩余角度，减小过冲。 */
 #define DART_ASCENT_PITCH_PULL_US               110.0f  /* 阶段2 固定抬头输出（微秒）；对齐 11.12-15 实测 */
+
 #define DART_ASCENT_PITCH_STOP_DEG              23.0f   /* 抬回此角度即停止补偿（度）；两种策略共用 */
 
 /* LIFT_PID 阶段2 的速率环参数（方案 B：角度差 -> 目标速率 -> 速率误差 -> 舵面）
@@ -355,6 +356,8 @@ extern "C" {
 #define DART_ASCENT_PITCH_RATE_GAIN             1.0f    /* 角度差换算成目标速率（1/秒） */
 #define DART_ASCENT_PITCH_MAX_RATE             35.0f    /* 目标低头速率限幅（度/秒） */
 #define DART_ASCENT_PITCH_RATE_KD               2.0f    /* 速率误差换算成舵面（微秒/(度/秒)） */
+
+//roll补偿
 #define DART_ASCENT_ROLL_COMPENSATION_ENABLE    0U      /* 1: 启用 roll 初始补偿，0: 走 roll 自稳 */
 #define DART_ASCENT_ROLL_TARGET_DEG             0.0f    /* roll 补偿目标角（度） */
 #define DART_ASCENT_ROLL_LIFT_US                100.0f  /* roll 固定抬升输出（微秒），符号需实机确认 */

@@ -355,7 +355,7 @@ def poll_telemetry():
     global telem_ok_printed, last_no_link_print
     global telem_frames
     global mode
-    global flight_seen, descent_seen_ms, landed_seen_ms
+    global flight_seen, descent_seen_ms, landed_seen_ms, record_done
 
     got = 0
     n = uart.any()
@@ -422,6 +422,13 @@ def poll_telemetry():
         # Latch the flight transitions from every valid UART frame. The camera
         # loop may skip a short LAUNCHED state while writing an image frame.
         if STATE_LAUNCHED <= telem_state <= STATE_DESCENT:
+            # 新一轮起飞：若上一轮的落地标志还在，先清干净。
+            # 否则 record_should_stop 会拿旧时间戳立即返回 True，
+            # 录像只写出文件头（约 1 KB）就结束。
+            if landed_seen_ms is not None:
+                landed_seen_ms = None
+                descent_seen_ms = None
+                record_done = False
             flight_seen = True
         if telem_state == STATE_DESCENT and descent_seen_ms is None:
             descent_seen_ms = time.ticks_ms()
@@ -630,7 +637,10 @@ def record_should_stop(now_ms, start_ms):
     3) debug 且未检出落地 → 不设时间停止点，只等落地
     4) MAX_RECORD_MS 是任何情况下的绝对上限，防止 SD 写满
     """
-    if landed_seen_ms is not None:
+    # 只认本次录像开始之后发生的落地。上一轮遗留的落地标志时间戳早于
+    # start_ms，ticks_diff 为负，会被忽略——否则录像一启动就立即结束。
+    if (landed_seen_ms is not None and
+            time.ticks_diff(landed_seen_ms, start_ms) >= 0):
         return time.ticks_diff(
             now_ms,
             time.ticks_add(landed_seen_ms, LANDED_RECORD_TAIL_MS)) >= 0
