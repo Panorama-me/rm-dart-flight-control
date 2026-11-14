@@ -140,6 +140,14 @@ def load_logic():
         "image": types.SimpleNamespace(ImageIO=FakeImageIO),
         "os": types.SimpleNamespace(stat=lambda path: (_ for _ in ()).throw(OSError())),
         "sensor": types.SimpleNamespace(QVGA=1, RGB565=2),
+        # main.py 顶层 import gc 会被 AST 过滤掉，这里补一个：
+        # mem_free 给大值让预检查跳过，enable/disable/collect 走空实现。
+        "gc": types.SimpleNamespace(
+            enable=lambda: None,
+            disable=lambda: None,
+            collect=lambda: None,
+            mem_free=lambda: 999999,
+        ),
     }
     exec(compile(module, str(MAIN), "exec"), namespace)
     return namespace, fake_time, fake_uart

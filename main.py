@@ -60,7 +60,12 @@ TELEM_LOG_SYNC_MS = 1000
 # 0: no overlay, 1: target box + FPS + state line, 2: full debug text
 OVERLAY_LEVEL = 1
 # Frames between manual GC runs while the collector is disabled.
-GC_COLLECT_INTERVAL = 60
+# 原来 60 帧（21 fps 下约 2.9 秒）太久：draw_overlay 每帧创建多个格式化字符串，
+# 关闭 GC 期间堆被碎片占满，mjpeg 申请 JPEG 缓冲区失败会抛 "Compression Failed!"。
+# 20 帧约 1 秒一次，单次 collect 十几毫秒，摊到每帧不到 1 ms。
+GC_COLLECT_INTERVAL = 20
+# JPEG 编码前要求的最小空闲堆字节数。低于此值先强制回收一次再写。
+JPEG_MIN_FREE_BYTES = 28000
 
 # 模式：由下位机握手决定
 MODE_DEFAULT = 0
@@ -828,17 +833,42 @@ def update_recording(img):
     if (RECORD_INTERVAL_MS > 0 and record_last_write_ms is not None and
             time.ticks_diff(now, record_last_write_ms) < RECORD_INTERVAL_MS):
         return
+    # JPEG 编码要临时缓冲区。GC 关闭期间堆容易碎片化，
+    # 表现为 mjpeg 抛 "Compression Failed!"。写之前先看一眼余量。
+    if (record_is_mjpeg and hasattr(gc, "mem_free") and
+            gc.mem_free() < JPEG_MIN_FREE_BYTES):
+        gc.enable()
+        gc.collect()
+        gc.disable()
+
+    write_ok = False
+    write_err = None
     try:
         # MJPEG 边编码边写；原始流直接追加帧数据。
         if record_is_mjpeg:
             record_stream.write(img, quality=RECORD_JPEG_QUALITY)
         else:
             record_stream.write(img)
-        record_last_write_ms = time.ticks_ms()
-    except Exception as e:
-        # 只有真正写不进去才放弃：写失败会破坏 MJPEG 流，重试没有意义。
-        print("[DEBUG] record write err:", e)
-        log_record_error("write", e)
+        write_ok = True
+    except Exception:
+        # 压缩失败多半是堆不够：强制回收一次再试，能救回这一帧。
+        gc.enable()
+        gc.collect()
+        gc.disable()
+        try:
+            if record_is_mjpeg:
+                record_stream.write(img, quality=RECORD_JPEG_QUALITY)
+            else:
+                record_stream.write(img)
+            write_ok = True
+            print("[DEBUG] record write retry ok after gc")
+        except Exception as e2:
+            write_err = e2
+
+    if not write_ok:
+        # 两次都失败：写失败会破坏 MJPEG 流，重试没有意义。
+        print("[DEBUG] record write err:", write_err)
+        log_record_error("write", write_err)
         was_mjpeg = record_is_mjpeg
         failed_path = record_path
         stop_recording()
@@ -855,6 +885,8 @@ def update_recording(img):
             return
         record_done = True
         return
+
+    record_last_write_ms = time.ticks_ms()
 
     if time.ticks_diff(record_last_write_ms,
                        record_last_sync_ms) >= RECORD_SYNC_MS:
