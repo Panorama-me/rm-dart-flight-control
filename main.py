@@ -840,8 +840,9 @@ def update_recording(img):
     if (record_interval_ms > 0 and record_last_write_ms is not None and
             time.ticks_diff(now, record_last_write_ms) < record_interval_ms):
         return
-    # JPEG 编码要临时缓冲区。GC 关闭期间堆容易碎片化，
-    # 表现为 mjpeg 抛 "Compression Failed!"。写之前先看一眼余量。
+    # 注意：Compression Failed! 缺的是 fb_alloc 帧缓冲池，不是 gc 管的堆。
+    # mem_free 预检看不到 fb_alloc，对这个错误基本无效——留着只当顺带防一下
+    # Python 侧真的 OOM。真正的兜底是下面的 .bin 降级。
     if (record_is_mjpeg and hasattr(gc, "mem_free") and
             gc.mem_free() < JPEG_MIN_FREE_BYTES):
         gc.enable()
@@ -858,7 +859,8 @@ def update_recording(img):
             record_stream.write(img)
         write_ok = True
     except Exception:
-        # 压缩失败多半是堆不够：强制回收一次再试，能救回这一帧。
+        # 先 GC 重试一次：对 Python 堆 OOM 有效，对 fb_alloc 不足无效。
+        # 再失败就删残片、降级写 .bin，那才是真正能兜住的一层。
         gc.enable()
         gc.collect()
         gc.disable()
