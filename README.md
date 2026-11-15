@@ -161,7 +161,7 @@ flags：bit0 视觉链路有效、bit1 目标有效、bit2 IMU 就绪、bit3 握
 | 上升 pitch 目标 | +30°（映射后角度） | `DART_ASCENT_PITCH_TARGET_DEG` |
 | 上升 pitch 策略 | LIFT_PID：硬抬升到 23° → 角度+速率串级拉回 23° 即锁存（速率环 KD=2.0） | `DART_ASCENT_PITCH_*` |
 | 下降判据 | 映射后 pitch < 5°，连续 25 周期，且已上升 300 ms | `DART_DESCENT_PITCH_THRESHOLD_DEG` |
-| 前视时间 / 前视限幅 | 0.20 s / ±3.0° | `DART_LEAD_TIME_S`、`DART_LEAD_MAX_DEG` |
+| 前视时间 / 前视限幅 / 总指令 | 0.20 s / ±3.0° / **±15.0°** | `DART_LEAD_TIME_S`、`DART_LEAD_MAX_DEG`、`DART_LEAD_COMMAND_LIMIT_DEG` |
 | 视线角速率 / 指令限幅 | ±15 °/s、±10°（死区 1.0 °/s、低通 55 ms） | `DART_LOS_RATE_LIMIT_DEG_S`、`DART_LEAD_COMMAND_LIMIT_DEG` |
 | 自稳 PID | yaw 20/0/1.5，pitch 20/0/1.5，roll 10/0/1.0 | `DART_*_STAB_*` |
 | 视觉 PID | yaw 20/0/2.0，pitch 20/0/3.0 | `DART_*_VISION_*` |
