@@ -164,7 +164,7 @@ flags：bit0 视觉链路有效、bit1 目标有效、bit2 IMU 就绪、bit3 握
 | 前视时间 / 前视限幅 | 0.20 s / ±3.0° | `DART_LEAD_TIME_S`、`DART_LEAD_MAX_DEG` |
 | 视线角速率 / 指令限幅 | ±15 °/s、±10°（死区 1.0 °/s、低通 55 ms） | `DART_LOS_RATE_LIMIT_DEG_S`、`DART_LEAD_COMMAND_LIMIT_DEG` |
 | 自稳 PID | yaw 20/0/1.5，pitch 20/0/1.5，roll 10/0/1.0 | `DART_*_STAB_*` |
-| 视觉 PID | yaw 18/0/5.0，pitch 20/0/3.0 | `DART_*_VISION_*` |
+| 视觉 PID | yaw 20/0/3.0，pitch 20/0/3.0 | `DART_*_VISION_*` |
 | 舵机 | PWM 200 Hz，中位 1550 µs，行程 550–2550 µs，步进 30 µs/控制周期 | `DART_SERVO_*` |
 | 图像 | QVGA 320×240；读出窗口 **1280×960**（11.15 起 ioctl 生效），视场 **36.9°×28.1°**；焦距 **480/480** | `DART_IMAGE_*`、`DART_CAMERA_FOCAL_*_PX` |
 | 视觉链路 / 目标保持 | 250 ms / 120 ms，500 ms 复位 EKF | `DART_VISION_LINK_TIMEOUT_MS` 等 |
