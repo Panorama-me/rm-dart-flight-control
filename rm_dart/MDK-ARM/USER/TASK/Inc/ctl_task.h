@@ -149,14 +149,24 @@ extern "C" {
 #define DART_IMAGE_HEIGHT_PX                 240.0f    /* OpenMV 输出 QVGA，高度 240 */
 /* 视觉焦距（像素）。OV5640 全幅 2592x1944、水平 68°：
    f_sensor = 1296/tan(34°) = 1921 px。
-   注意：main.py 的 IOCTL_SET_READOUT_WINDOW 排在 set_framesize 之后，
-   实测未生效，实际读出窗口是 OpenMV 在 QVGA 下的默认值——传感器中心 640x480。
-   640x480 窗口缩放到 320x240 输出，f = (320/2)/tan(atan(320/1921)) = 961 px。
-   台架实测：目标偏 5° 时旧值 480 算出 10°（正好 2 倍），改为 961 后吻合。
-   若将来修正 ioctl 顺序让 1280x960 真正生效，f 应改回 480（视场 36.8°x28.1°）。
+   读出窗口 W 缩放到 320x240 输出后 f_out = 1921 * 320 / W：
+     W = 640  -> f = 961，视场 18.9 x 14.2 度（旧的 (0,700,640,480) 窗口）
+     W = 1280 -> f = 480，视场 36.9 x 28.1 度（当前 (0,0,1280,960) 窗口）
+
+   **11.15 起 READOUT_ROI 改成 (0,0,1280,960) 后，IOCTL 真正生效了**，
+   视场翻倍，f 必须跟着改成 480。用 961 会让上报角度只有真值的一半，
+   视觉环等效增益也减半——表现为「机头转的角度是显示值的两倍」。
+
+   两路独立实测（11.15 的 00015~00017）：
+   1) 录像法：rec_00017 六个带 Found 的帧，画面 X 对 yaw 回归得 8.92 px/度，
+      f = 8.92 * 57.3 = 511；
+   2) 遥测法：目标静止时 d(相对LOS)/d(yaw) = f_true/f_code，
+      t=1.32->1.78 区间斜率 -0.50，f_true = 0.50 * 961 = 480。
+   两者都指向 480 附近，与 W=1280 的理论值吻合。
+
    两轴必须相等，否则 roll 旋转后的指令会出现各向异性（见 9.x）。 */
-#define DART_CAMERA_FOCAL_X_PX                961.0f
-#define DART_CAMERA_FOCAL_Y_PX                961.0f
+#define DART_CAMERA_FOCAL_X_PX                480.0f
+#define DART_CAMERA_FOCAL_Y_PX                480.0f
 /* 相机安装角与读出窗口偏移造成的固定视线偏置（度），默认 0。
    当前 640x480 窗口在垂直方向相对光轴偏移约 20 度；
    若机身轴对准目标时图像不在 (160,120)，把实测偏置填到这里。 */
@@ -316,8 +326,8 @@ extern "C" {
 #define DART_PID_OLS_ORDER                        0U  /* 用陀螺角速率代替误差微分 */
 #define DART_PID_IMPROVE_FLAGS  (Integral_Limit | Trapezoid_Intergral | \
                                  DerivativeFilter | OutputFilter)      /* PID 改进标志位 */
-#define DART_YAW_KP                              10.0f               /* 偏航 PID 比例系数 */
-#define DART_YAW_KI                               8.00f               /* 偏航 PID 积分系数 */
+#define DART_YAW_KP                              20.0f               /* 偏航 PID 比例系数 */
+#define DART_YAW_KI                               0.00f               /* 偏航 PID 积分系数 */
 /* Kd 的单位是“微秒 /（度/秒）”，符号需在实机上确认。
    11.15 六发实测：舵面 -> 角速率互相关峰值在 198~264 ms（6~8 帧），
    回路增益 KP*0.09*3.5 约 6.3，在 1/(2*0.21)=2.4 Hz 处转满 180 度，
@@ -325,7 +335,7 @@ extern "C" {
    按一阶对象 + 纯延迟模型扫参数：KD 1.5 -> 2.5 时残余摆幅
    从 2.5 度降到 2.0 度，而对外部扰动的峰值偏差不变（2.19 度）；
    KD 到 4.0 以上会发散（12 度），2.5 是留足余量的折中。 */
-#define DART_YAW_KD                               1.0f              /* 偏航 PID 微分系数 */
+#define DART_YAW_KD                               2.5f              /* 偏航 PID 微分系数 */
 #define DART_PITCH_KP                            10.0f               /* 俯仰 PID 比例系数 */
 #define DART_PITCH_KI                             0.0f               /* 俯仰 PID 积分系数 */
 #define DART_PITCH_KD                             2.5f              /* 俯仰 PID 微分系数 */
@@ -353,9 +363,9 @@ extern "C" {
      KP/KD = 20/3.5（原值）  反向超调 1.5~3.5 度
      KP/KD = 18/5.0（现值）  反向超调 0.05~1.6 度，收敛时间只慢 0.1 s
    再往上（KD 6 以上）在上升段高增益（K≈3.9）会发散，所以取 5.0。 */
-#define DART_YAW_VISION_KP                       18.0f
+#define DART_YAW_VISION_KP                       20.0f
 #define DART_YAW_VISION_KI                       0.0f
-#define DART_YAW_VISION_KD                       5.0f
+#define DART_YAW_VISION_KD                       3.0f
 #define DART_PITCH_VISION_KP                     20.0f
 #define DART_PITCH_VISION_KI                     0.00f
 #define DART_PITCH_VISION_KD                     3.00f
