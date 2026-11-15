@@ -316,8 +316,8 @@ extern "C" {
 #define DART_PID_OLS_ORDER                        0U  /* 用陀螺角速率代替误差微分 */
 #define DART_PID_IMPROVE_FLAGS  (Integral_Limit | Trapezoid_Intergral | \
                                  DerivativeFilter | OutputFilter)      /* PID 改进标志位 */
-#define DART_YAW_KP                              20.0f               /* 偏航 PID 比例系数 */
-#define DART_YAW_KI                               0.00f               /* 偏航 PID 积分系数 */
+#define DART_YAW_KP                              10.0f               /* 偏航 PID 比例系数 */
+#define DART_YAW_KI                               8.00f               /* 偏航 PID 积分系数 */
 /* Kd 的单位是“微秒 /（度/秒）”，符号需在实机上确认。
    11.15 六发实测：舵面 -> 角速率互相关峰值在 198~264 ms（6~8 帧），
    回路增益 KP*0.09*3.5 约 6.3，在 1/(2*0.21)=2.4 Hz 处转满 180 度，
@@ -325,12 +325,12 @@ extern "C" {
    按一阶对象 + 纯延迟模型扫参数：KD 1.5 -> 2.5 时残余摆幅
    从 2.5 度降到 2.0 度，而对外部扰动的峰值偏差不变（2.19 度）；
    KD 到 4.0 以上会发散（12 度），2.5 是留足余量的折中。 */
-#define DART_YAW_KD                               2.5f              /* 偏航 PID 微分系数 */
+#define DART_YAW_KD                               1.0f              /* 偏航 PID 微分系数 */
 #define DART_PITCH_KP                            10.0f               /* 俯仰 PID 比例系数 */
 #define DART_PITCH_KI                             0.0f               /* 俯仰 PID 积分系数 */
 #define DART_PITCH_KD                             2.5f              /* 俯仰 PID 微分系数 */
 #define DART_ROLL_KP                             10.0f               /* 横滚 PID 比例系数 */
-#define DART_ROLL_KI                              0.00f               /* 横滚 PID 积分系数 */
+#define DART_ROLL_KI                              8.00f               /* 横滚 PID 积分系数 */
 #define DART_ROLL_KD                              1.0f    
 /* 横滚 PID 微分系数 */
 
@@ -345,9 +345,17 @@ extern "C" {
 /* 视觉 PID 的输入是角度误差（度）。当前焦距 480 px（1280x960 读出窗口），
    同样的像素偏移对应的角度约为全幅（237 px）的 1/2；
    若跟踪偏慢，优先按比例增大 DART_*_VISION_KP。 */
-#define DART_YAW_VISION_KP                       20.0f
+/* 视觉 yaw 超调：11.15 的 00015~00017 实测，yaw 转过 4.6~7.3 度，
+   而视觉指令峰值只有 2.4~4.9 度——典型的欠阻尼。
+   环路延迟由两段组成：舵面 -> 角速率约 200 ms（见 DART_YAW_KD 注释），
+   相机侧（曝光 + 中值滤波 + 串口）再叠 100~130 ms，合计 300 ms 以上。
+   按一阶对象 + 双段延迟模型扫参（K=2.2~3.9，覆盖升降两段实测范围）：
+     KP/KD = 20/3.5（原值）  反向超调 1.5~3.5 度
+     KP/KD = 18/5.0（现值）  反向超调 0.05~1.6 度，收敛时间只慢 0.1 s
+   再往上（KD 6 以上）在上升段高增益（K≈3.9）会发散，所以取 5.0。 */
+#define DART_YAW_VISION_KP                       18.0f
 #define DART_YAW_VISION_KI                       0.0f
-#define DART_YAW_VISION_KD                       3.5f
+#define DART_YAW_VISION_KD                       5.0f
 #define DART_PITCH_VISION_KP                     20.0f
 #define DART_PITCH_VISION_KI                     0.00f
 #define DART_PITCH_VISION_KD                     3.00f

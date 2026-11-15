@@ -104,11 +104,11 @@ THRESHOLDS1 = [(9, 100, -102, -25, 0, 127)]
 
 FRAME_SIZE = sensor.QVGA
 PIXFORMAT = sensor.RGB565
-EXPOSURE_US = 300
+EXPOSURE_US = 100
 SKIP_FRAMES_MS = 1500
 
 GUIDE_CX = BLOB_ROI[0] + BLOB_ROI[2] // 2
-GUIDE_CY = BLOB_ROI[1] + BLOB_ROI[3] // 2
+GUIDE_CY = 110
 
 # =========================
 # 通信协议
