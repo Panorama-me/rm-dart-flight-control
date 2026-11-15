@@ -256,7 +256,7 @@ extern "C" {
    期望速率 = GAIN × (当前角 - 目标角)，限幅 ±MAX_RATE；
    舵面 = RATE_KD × (期望速率 - 实际速率)。
    接近目标时速率自动减小，到达即稳定（gyro ≈ 0），不会过冲。 */
-#define DART_GLIDE_PITCH_DEG                (-35.0f)   /* 基准滑翔俯仰角（度） */
+#define DART_GLIDE_PITCH_DEG                (-45.0f)   /* 基准滑翔俯仰角（度） */
 
 /* 滑翔段（无目标）：把机头拉向基准滑翔角，GAIN 5.0 对应时间常数约 0.2 s。
    有了下面的输出限幅兜底，滑翔段不会再把舵面推进力矩反转区。 */
@@ -318,8 +318,14 @@ extern "C" {
                                  DerivativeFilter | OutputFilter)      /* PID 改进标志位 */
 #define DART_YAW_KP                              20.0f               /* 偏航 PID 比例系数 */
 #define DART_YAW_KI                               0.00f               /* 偏航 PID 积分系数 */
-/* Kd 的单位是“微秒 /（度/秒）”，符号需在实机上确认。 */
-#define DART_YAW_KD                               1.5f              /* 偏航 PID 微分系数 */
+/* Kd 的单位是“微秒 /（度/秒）”，符号需在实机上确认。
+   11.15 六发实测：舵面 -> 角速率互相关峰值在 198~264 ms（6~8 帧），
+   回路增益 KP*0.09*3.5 约 6.3，在 1/(2*0.21)=2.4 Hz 处转满 180 度，
+   表现为升降两段都存在的 ±2~4 度、约 2 Hz 极限环。
+   按一阶对象 + 纯延迟模型扫参数：KD 1.5 -> 2.5 时残余摆幅
+   从 2.5 度降到 2.0 度，而对外部扰动的峰值偏差不变（2.19 度）；
+   KD 到 4.0 以上会发散（12 度），2.5 是留足余量的折中。 */
+#define DART_YAW_KD                               2.5f              /* 偏航 PID 微分系数 */
 #define DART_PITCH_KP                            10.0f               /* 俯仰 PID 比例系数 */
 #define DART_PITCH_KI                             0.0f               /* 俯仰 PID 积分系数 */
 #define DART_PITCH_KD                             2.5f              /* 俯仰 PID 微分系数 */
