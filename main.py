@@ -47,6 +47,14 @@ MAX_RECORD_MS = 30000
 #   改造后 25.4+ 4.6+17.9 = 47.8 ms -> 约 20.9 fps（看叠加层的 xxfps 确认）
 RECORD_USE_MJPEG = True
 RECORD_JPEG_QUALITY = 60
+# 录像前的均值池化倍数。1=原分辨率 320x240；2=160x120。
+# MJPEG 在 QVGA 下要同时占住帧缓冲（320*240*2=150 KB）和 JPEG 编码 scratch（约 150 KB），
+# fb_alloc 余量本来就卡在边界上——11.15 下午 22 发里只有 2 发 mjpeg 成功，
+# 其余全部第一帧就抛 Compression Failed!，降级成 .bin。
+# 池化到 1/2 后 scratch 降到约 38 KB，余量拉开 4 倍，实测能稳定跑满帧率。
+# 代价：视频 160x120，叠加层文字会糊——遥测 CSV 里有完整数据，不影响事后分析。
+# 想看 320x240 就把这里改回 1，但要接受随时可能降级成 .bin。
+RECORD_POOL_DIV = 2
 # 0: write every captured frame; >0: minimum interval.
 # 取 33 而不是 50：实际间隔是 ceil(INTERVAL/主循环周期)*周期，主循环波动时
 # 50 会跨三档导致帧数漂移，33 落到两帧一录更稳定。
@@ -108,7 +116,7 @@ EXPOSURE_US = 100
 SKIP_FRAMES_MS = 1500
 
 GUIDE_CX = BLOB_ROI[0] + BLOB_ROI[2] // 2
-GUIDE_CY = 110
+GUIDE_CY = 115
 
 # =========================
 # 通信协议
@@ -806,8 +814,9 @@ def start_recording():
     record_start_ms = time.ticks_ms()
     record_last_write_ms = None
     record_last_sync_ms = record_start_ms
-    log_record_event("start", "%s fmt=%s" %
-                     (path, "mjpeg" if use_mjpeg else "bin"))
+    log_record_event("start", "%s fmt=%s div=%d" %
+                     (path, "mjpeg" if use_mjpeg else "bin",
+                      RECORD_POOL_DIV if use_mjpeg else 1))
 
     if led is not None:
         led.on()
@@ -875,6 +884,15 @@ def update_recording(img):
         gc.enable()
         gc.collect()
         gc.disable()
+
+    # 录像前把画面均值池化，给 JPEG 编码器腾出 fb_alloc（见 RECORD_POOL_DIV 注释）。
+    # 只对 mjpeg 做：.bin 走原始帧，池化会让 150 KB 的帧缩成 38 KB，反而丢了分辨率。
+    # 这一步必须在两次 write 尝试之前完成，否则重试时会再池化一次变成 80x60。
+    if record_is_mjpeg and RECORD_POOL_DIV > 1:
+        try:
+            img.mean_pool(RECORD_POOL_DIV, RECORD_POOL_DIV)
+        except Exception:
+            pass
 
     write_ok = False
     write_err = None
@@ -953,6 +971,11 @@ def init_sensor():
             sensor.reset()
             sensor.set_pixformat(PIXFORMAT)
             sensor.set_framesize(FRAME_SIZE)
+            # 只要 1 个帧缓冲。QVGA RGB565 一个就是 150 KB，多一个就少 150 KB 给 JPEG 编码。
+            try:
+                sensor.set_framebuffers(1)
+            except Exception:
+                pass
             sensor.ioctl(sensor.IOCTL_SET_READOUT_WINDOW, READOUT_ROI)
             sensor.set_windowing(BLOB_ROI)
             sensor.set_auto_gain(False, gain_db=20)

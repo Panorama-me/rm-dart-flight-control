@@ -275,6 +275,51 @@ class MainLogicTest(unittest.TestCase):
         self.assertTrue(ns["record_is_mjpeg"])
         self.assertEqual(FakeImageIO.instances, [])
 
+    def test_mjpeg_recording_pools_image_before_encode(self):
+        """录像前必须把画面池化，给 JPEG 编码器腾出 fb_alloc。
+
+        11.15 下午 22 发里只有 2 发 mjpeg 成功，其余第一帧就抛
+        Compression Failed!——QVGA 下帧缓冲 150 KB + 编码 scratch 约 150 KB
+        把 fb_alloc 卡在边界上，池化到 1/2 后 scratch 降到约 38 KB。
+        """
+        class FakeImg:
+            def __init__(self):
+                self.pooled = []
+
+            def mean_pool(self, x_div, y_div):
+                self.pooled.append((x_div, y_div))
+
+        ns, fake_time, _ = load_logic()
+        ns["record_dir"] = "/sdcard"
+        ns["mjpeg"] = types.SimpleNamespace(Mjpeg=FakeMjpeg)
+        ns["flight_seen"] = True
+        img = FakeImg()
+        ns["update_recording"](img)
+
+        self.assertGreater(ns["RECORD_POOL_DIV"], 1, "默认应当池化")
+        self.assertEqual(img.pooled,
+                         [(ns["RECORD_POOL_DIV"], ns["RECORD_POOL_DIV"])])
+        self.assertEqual(FakeMjpeg.instances[0].frames, 1)
+
+    def test_bin_recording_does_not_pool_image(self):
+        """.bin 走原始帧，池化只会丢分辨率，不能对它生效。"""
+        class FakeImg:
+            def __init__(self):
+                self.pooled = []
+
+            def mean_pool(self, x_div, y_div):
+                self.pooled.append((x_div, y_div))
+
+        ns, fake_time, _ = load_logic()
+        ns["record_dir"] = "/sdcard"
+        ns["flight_seen"] = True
+        img = FakeImg()
+        ns["update_recording"](img)
+
+        self.assertFalse(ns["record_is_mjpeg"])
+        self.assertEqual(img.pooled, [])
+        self.assertEqual(FakeImageIO.instances[0].frames, 1)
+
     def test_recording_starts_in_debug_mode(self):
         """台架调试没有发射，也要能录像。"""
         ns, fake_time, uart = load_logic()
