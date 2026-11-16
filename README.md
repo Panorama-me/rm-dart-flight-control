@@ -4,9 +4,11 @@ STM32F103 + OpenMV 的双控制器原型工程。F103 负责姿态解算、起�
 
 ![固件](https://img.shields.io/badge/firmware-STM32F103C8-blue) ![IDE](https://img.shields.io/badge/IDE-Keil%20MDK%20ARMCC%205.06-orange) ![vision](https://img.shields.io/badge/vision-OpenMV%20QVGA-green) ![status](https://img.shields.io/badge/status-bench%20only-red)
 
-> **状态：未完成上板验证。** 本文所有参数均为代码默认值，未经真实飞行整定。首次测试必须拆除动力或牢固约束机体。
+> **状态：已实飞 39 发（11.15）。** 参数已按飞行数据整定过若干轮，但**视觉 yaw 回路仍在
+> 不稳定边界上**（等效 KP=20、环路延迟 330 ms），详见 `docs/AI交接.md` 第 4 节。
+> 首次测试仍必须拆除动力或牢固约束机体。
 
-最后更新：2026-11-03
+最后更新：2026-11-16
 
 ---
 
@@ -32,7 +34,8 @@ STM32F103 + OpenMV 的双控制器原型工程。F103 负责姿态解算、起�
 .
 ├── README.md                 本文件：总览、接线、协议速查、构建与验证
 ├── docs/
-│   └── 技术手册.md            原理与实现细节、参数总表、排障、风险与后续计划
+│   ├── 技术手册.md            原理与实现细节、参数总表、排障、风险与后续计划
+│   └── AI交接.md              ★ 接手必读：数据怎么读、当前参数、已确认结论、下一步
 ├── main.py                   OpenMV 视觉端主程序
 ├── imageio_playback.py       OpenMV 录像回放 / 导出脚本
 ├── tests/
@@ -162,14 +165,14 @@ flags：bit0 视觉链路有效、bit1 目标有效、bit2 IMU 就绪、bit3 握
 | 上升 pitch 策略 | LIFT_PID：硬抬升到 23° → 角度+速率串级拉回 23° 即锁存（速率环 KD=2.0） | `DART_ASCENT_PITCH_*` |
 | 下降判据 | 映射后 pitch < 5°，连续 25 周期，且已上升 300 ms | `DART_DESCENT_PITCH_THRESHOLD_DEG` |
 | 前视时间 / 前视限幅 / 总指令 | 0.20 s / ±3.0° / **±15.0°** | `DART_LEAD_TIME_S`、`DART_LEAD_MAX_DEG`、`DART_LEAD_COMMAND_LIMIT_DEG` |
-| 视线角速率 / 指令限幅 | ±15 °/s、±10°（死区 1.0 °/s、低通 55 ms） | `DART_LOS_RATE_LIMIT_DEG_S`、`DART_LEAD_COMMAND_LIMIT_DEG` |
-| 自稳 PID | yaw 20/0/1.5，pitch 20/0/1.5，roll 10/0/1.0 | `DART_*_STAB_*` |
+| 视线角速率 / 指令限幅 | ±15 °/s、**±15°**（死区 1.0 °/s、低通 55 ms） | `DART_LOS_RATE_LIMIT_DEG_S`、`DART_LEAD_COMMAND_LIMIT_DEG` |
+| 自稳 PID | yaw 20/0/**2.5**，pitch **10**/0/2.5，roll 10/**8.0**/1.0 | `DART_*_STAB_*` |
 | 视觉 PID | yaw 20/0/2.0，pitch 20/0/3.0 | `DART_*_VISION_*` |
 | 舵机 | PWM 200 Hz，中位 1550 µs，行程 550–2550 µs，步进 30 µs/控制周期 | `DART_SERVO_*` |
 | 图像 | QVGA 320×240；读出窗口 **1280×960**（11.15 起 ioctl 生效），视场 **36.9°×28.1°**；焦距 **480/480** | `DART_IMAGE_*`、`DART_CAMERA_FOCAL_*_PX` |
 | 视觉链路 / 目标保持 | 250 ms / 120 ms，500 ms 复位 EKF | `DART_VISION_LINK_TIMEOUT_MS` 等 |
 | 上电 yaw 零偏标定 | 静止 2 s，测漂移速率并补偿 | `DART_YAW_CALIB_*` |
-| 下降段滑翔速率环 | 基准 −30°；期望速率 = 1.0/s × 角偏差（限 ±35 °/s）；舵面 = 2.5 × 速率误差 | `DART_GLIDE_*` |
+| 下降段滑翔速率环 | 基准 **−45°**；期望速率 = **5.0/s** × 角偏差（限 ±80 °/s）；舵面 = 2.5 × 速率误差；视觉段 8.0/s、±100 °/s | `DART_GLIDE_*`、`DART_VISION_PITCH_*` |
 | 脱锁保持 | **当前关闭**（0）：脱锁后回发射航向。置 1 则记录目标居中时的 yaw，脱锁后按该角闭环 | `DART_YAW_ABS_LOCK_ENABLE` |
 | 落地状态 | 合成角速率 >500 °/s 单帧，>400 连两帧 → LANDED，停四路 PWM、舵机自由 | `DART_LANDING_*` |
 | 录像 | MJPEG 直编码（`.mjpeg` 可直接播），4.4 ms/帧 5.6 KB；起飞开始，落地标志 +200 ms 停，非 debug 兜底 3 s | `RECORD_USE_MJPEG`、`RECORD_JPEG_QUALITY` |
