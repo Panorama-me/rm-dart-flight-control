@@ -1166,9 +1166,11 @@ static void run_descent_guidance(const INS_t *ins)
     yaw_command = constrain_float(yaw_command,
                                   -DART_LEAD_COMMAND_LIMIT_DEG,
                                   DART_LEAD_COMMAND_LIMIT_DEG);
+    /* pitch 用更紧的限幅：俯仰指令要乘速率增益变成低头速率，
+       15 度会要求 75 度/秒，超过舵面稳定能力；yaw 仍用 15 度。 */
     pitch_command = constrain_float(pitch_command,
-                                    -DART_LEAD_COMMAND_LIMIT_DEG,
-                                    DART_LEAD_COMMAND_LIMIT_DEG);
+                                    -DART_PITCH_COMMAND_LIMIT_DEG,
+                                    DART_PITCH_COMMAND_LIMIT_DEG);
 
     /* 下位机模式：pitch/yaw 单轴时另一轴复位并输出 0；both/default 两轴 */
     if (DART_MODE == DART_MODE_PITCH)
@@ -1253,9 +1255,11 @@ static void run_debug_guidance(const INS_t *ins)
     yaw_command = constrain_float(yaw_command,
                                   -DART_LEAD_COMMAND_LIMIT_DEG,
                                   DART_LEAD_COMMAND_LIMIT_DEG);
+    /* pitch 用更紧的限幅：俯仰指令要乘速率增益变成低头速率，
+       15 度会要求 75 度/秒，超过舵面稳定能力；yaw 仍用 15 度。 */
     pitch_command = constrain_float(pitch_command,
-                                    -DART_LEAD_COMMAND_LIMIT_DEG,
-                                    DART_LEAD_COMMAND_LIMIT_DEG);
+                                    -DART_PITCH_COMMAND_LIMIT_DEG,
+                                    DART_PITCH_COMMAND_LIMIT_DEG);
 
     DartControl.telemetry.target_yaw_deg = yaw_command;
     DartControl.telemetry.target_pitch_deg = pitch_command;
