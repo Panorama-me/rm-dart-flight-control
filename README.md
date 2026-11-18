@@ -23,7 +23,7 @@ STM32F103 + OpenMV 的双控制器原型工程。F103 负责姿态解算、起�
 | 视觉滤波 | 默认 RAW_RATE（位置不过滤、仅轻滤角速率），可切回 EKF | `update_vision_filter()` |
 | 模式握手 | 下位机决定模式，握手帧携带 default/pitch/yaw/both | `openmv_handshake_send()` |
 | 遥测 | 37 字节、50 Hz，含陀螺、姿态、输出目标角、LOS 增量、四路舵机角、状态、flags | `attitude_telemetry_send()` |
-| 目标识别 | 绿色色块 + 跟踪 ROI + 5 帧时间中值 | `main.py` |
+| 目标识别 | 绿色色块 + 跟踪 ROI + 3 帧时间中值 | `main.py` |
 | 机载记录 | ImageIO 原生 RGB565 录像 + 每帧遥测 CSV | `main.py` |
 | 回放导出 | OpenMV 上回放，可导出 MJPEG | `imageio_playback.py` |
 | 地面站 / GPS / 测距 | **无** | — |
