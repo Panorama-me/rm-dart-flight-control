@@ -132,6 +132,9 @@ extern "C" {
 #define DART_ATT_FLAG_IMU_READY             0x04U
 #define DART_ATT_FLAG_HANDSHAKE_DONE        0x08U
 #define DART_ATT_FLAG_OUTPUT_VALID          0x10U
+/* 固件版本标记（2026-11-18 22:39 起置位）：本版把制导调试量改成每周期更新，
+   地面/DEBUG 态也能看到。上位机看到 flags 含 0x40 才说明烧的是这一版。 */
+#define DART_ATT_FLAG_DBG_ALWAYS_ON         0x40U
 #define DART_ATT_TX_TIMEOUT_MS                 5U
 
 /* ------------------------- 握手 / 模式协议 ----------------------------- */

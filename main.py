@@ -198,6 +198,7 @@ F_TARGET_VALID = 0x02
 F_IMU_READY = 0x04
 F_HANDSHAKE_DONE = 0x08
 F_OUTPUT_VALID = 0x10
+F_DBG_ALWAYS_ON = 0x40   # 固件版本标记：调试量每周期更新（2026-11-18 22:39 起）
 
 # [DEBUG] 发送统计
 TX_SKIP_COUNT = 0
@@ -368,6 +369,7 @@ telem_yaw_u = 0.0
 telem_link = 0
 telem_last_ms = 0
 telem_ok_printed = False
+fw_marker_warned = False
 last_no_link_print = 0
 telem_frames = 0
 flight_seen = False
@@ -385,6 +387,7 @@ def poll_telemetry():
     global telem_a_meas, telem_a_cmd, telem_pn_omega, telem_yaw_u
     global telem_link, telem_last_ms
     global telem_ok_printed, last_no_link_print
+    global fw_marker_warned
     global telem_frames
     global mode
     global flight_seen, descent_seen_ms, landed_seen_ms, record_done
@@ -437,6 +440,11 @@ def poll_telemetry():
         telem_mode = telem_buf[b + T_MODE_INDEX]
         telem_state = telem_buf[b + T_STATE_INDEX]
         telem_flags = telem_buf[b + T_FLAGS_INDEX]
+        if not fw_marker_warned:
+            fw_marker_warned = True
+            if not (telem_flags & F_DBG_ALWAYS_ON):
+                print("[WARN] 固件较旧：调试量只在下降段更新，"
+                      "地面/DEBUG 态 a_meas/pn_omega/yaw_u 恒为 0，请重烧")
         telem_los_yaw = s16(telem_buf[b + T_LOS_YAW_H],
                             telem_buf[b + T_LOS_YAW_L]) / TELEM_LOS_SCALE
         telem_los_pitch = s16(telem_buf[b + T_LOS_PITCH_H],

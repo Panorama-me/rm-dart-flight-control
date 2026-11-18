@@ -1512,7 +1512,8 @@ void attitude_telemetry_send(void)
         (DartControl.telemetry.vision.valid ? DART_ATT_FLAG_TARGET_VALID : 0U) |
         (DartControl.imu_ready ? DART_ATT_FLAG_IMU_READY : 0U) |
         (DartControl.attitude_tx_armed ? DART_ATT_FLAG_HANDSHAKE_DONE : 0U) |
-        (output_valid ? DART_ATT_FLAG_OUTPUT_VALID : 0U));
+        (output_valid ? DART_ATT_FLAG_OUTPUT_VALID : 0U) |
+        DART_ATT_FLAG_DBG_ALWAYS_ON);
     tx_frame[DART_ATT_LOS_YAW_H_INDEX] = (uint8_t)((uint16_t)los_yaw_raw >> 8U);
     tx_frame[DART_ATT_LOS_YAW_L_INDEX] = (uint8_t)los_yaw_raw;
     tx_frame[DART_ATT_LOS_PITCH_H_INDEX] = (uint8_t)((uint16_t)los_pitch_raw >> 8U);
