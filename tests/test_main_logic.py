@@ -247,6 +247,25 @@ class MainLogicTest(unittest.TestCase):
         self.assertTrue(log.closed)
         self.assertTrue(ns["telem_log_done"])
 
+    def test_new_guidance_columns_carry_values(self):
+        """四个新增制导列必须真的从帧里解出来（曾因漏写 global 恒为 0）。"""
+        ns, fake_time, uart = load_logic()
+        ns["record_dir"] = "/sdcard"
+        fake_time.now = 10
+        raw = frame(ns, 0, 0, 0, ns["STATE_DESCENT"])
+        for name, value in (("A_MEAS", 350), ("A_CMD", -1225),
+                            ("PN_OMEGA", 2500), ("YAW_U", -180)):
+            raw[ns["T_" + name + "_H"]] = (value >> 8) & 0xFF
+            raw[ns["T_" + name + "_L"]] = value & 0xFF
+        raw[ns["T_CRC_INDEX"]] = ns["crc8_lsb"](raw, 0, ns["T_CRC_INDEX"])
+        uart.rx.extend(raw)
+        ns["poll_telemetry"]()
+        cols = "".join(FakeTextFile.instances[0].data).splitlines()[1].split(",")
+        self.assertEqual(cols[20], "3.50")
+        self.assertEqual(cols[21], "-12.25")
+        self.assertEqual(cols[22], "25.0")
+        self.assertEqual(cols[23], "-180.0")
+
     def test_recording_starts_after_missed_launch_and_closes_after_launch_cap(self):
         ns, fake_time, uart = load_logic()
         ns["record_dir"] = "/sdcard"

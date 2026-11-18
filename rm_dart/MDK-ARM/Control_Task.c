@@ -1744,6 +1744,30 @@ void control_Task(void)
     if (primask == 0U)
         __enable_irq();
 
+    /* 制导调试量：每个控制周期都更新，不依赖飞行状态。
+       之前这四个量只在 run_descent_guidance() 里赋值，而那个函数只在
+       DART_STATE_DESCENT 才被调用，所以飞机停在地面（READY/IMU_READY/
+       SERVO_READY/DEBUG）时遥测里永远是 0，台架没法验加速度轴和符号。 */
+    dbg_a_meas = DART_ACCEL_YAW_SIGN *
+                 ins_snapshot.MotionAccel_b[DART_ACCEL_YAW_AXIS];
+    dbg_a_cmd = 0.0f;              /* 只有下降段视觉引导才产生加速度指令 */
+    dbg_yaw_u = DartControl.telemetry.yaw_output_us;
+    if ((DartControl.flight_state <= DART_STATE_SERVO_READY) ||
+        (DartControl.flight_state == DART_STATE_DEBUG))
+    {
+        /* 地面/调试：给出台架可视量。
+           pn_omega 用与下降段相同的公式（相机项 + 机体角速率）。
+           yaw_u 是加速度内环在 a_cmd = 0 时的试算输出，只用于确认
+           「a_meas 为正时 yaw_u 应为负」这条负反馈关系，不驱动舵机。 */
+        dbg_pn_omega = constrain_float(
+            (DART_CAMERA_YAW_SIGN * DartControl.vision_x_ekf.rate +
+             DART_INS_YAW_RATE_RAD_S(&ins_snapshot)) * DART_RAD_TO_DEG,
+            -DART_PN_RATE_MAX, DART_PN_RATE_MAX);
+        dbg_yaw_u = -DART_ACCEL_K_A * dbg_a_meas -
+                    DART_ACCEL_K_Q *
+                    DART_INS_YAW_RATE_RAD_S(&ins_snapshot) * DART_RAD_TO_DEG;
+    }
+
     /* 若舵机未就绪：先在 IMU_READY 标定 yaw 零偏，再初始化舵机 */
     if (!DartControl.servo_ready)
     {

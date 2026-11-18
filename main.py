@@ -382,6 +382,7 @@ def poll_telemetry():
     global telem_out_pitch, telem_out_yaw, telem_out_roll
     global telem_mode, telem_state, telem_flags
     global telem_los_yaw, telem_los_pitch, telem_dbg_flags
+    global telem_a_meas, telem_a_cmd, telem_pn_omega, telem_yaw_u
     global telem_link, telem_last_ms
     global telem_ok_printed, last_no_link_print
     global telem_frames
