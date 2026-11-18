@@ -1077,6 +1077,11 @@ static void run_descent_guidance(const INS_t *ins)
             DartControl.telemetry.output_pitch_deg = DART_GLIDE_PITCH_DEG;
             DartControl.telemetry.target_pitch_deg = DART_GLIDE_PITCH_DEG;
             DartControl.telemetry.yaw_output_us = yaw_unlock_output(ins);
+            /* 无目标时视线角速率只剩机体自身转动，别留上一次的陈旧值。 */
+            dbg_pn_omega = constrain_float(
+                DART_INS_YAW_RATE_RAD_S(ins) * DART_RAD_TO_DEG,
+                -DART_PN_RATE_MAX, DART_PN_RATE_MAX);
+            dbg_yaw_u = DartControl.telemetry.yaw_output_us;
             DartControl.telemetry.output_yaw_deg =
                 yaw_abs_output_deg();
             write_servo_outputs(DartControl.telemetry.pitch_output_us,
@@ -1223,14 +1228,14 @@ static void run_descent_guidance(const INS_t *ins)
     if (DART_MODE != DART_MODE_PITCH)
     {
 #if (DART_YAW_PN_MODE == DART_YAW_PN_MODE_RATE)
-        float rate_cmd = DART_PN_N * pn_omega_yaw;
+        float rate_cmd = DART_PN_SIGN * DART_PN_N * pn_omega_yaw;
         rate_cmd = constrain_float(rate_cmd,
                                    -DART_PN_RATE_MAX, DART_PN_RATE_MAX);
         yaw_u = DART_PN_K_RATE * (rate_cmd - yaw_rate_now);
 #elif (DART_YAW_PN_MODE == DART_YAW_PN_MODE_ACCEL)
         /* 外环 PN 给横向加速度指令，内环用加速度计闭环到力。
            a_cmd = N * V_nom * omega，V_nom 只在这里出现。 */
-        float a_cmd = DART_PN_N * DART_PN_V_NOM *
+        float a_cmd = DART_PN_SIGN * DART_PN_N * DART_PN_V_NOM *
                       (pn_omega_yaw * DART_DEG_TO_RAD);
         float a_meas = DART_ACCEL_YAW_SIGN *
                        ins->MotionAccel_b[DART_ACCEL_YAW_AXIS];
@@ -1756,17 +1761,41 @@ void control_Task(void)
     if ((DartControl.flight_state <= DART_STATE_SERVO_READY) ||
         (DartControl.flight_state == DART_STATE_DEBUG))
     {
-        /* 地面/调试：给出台架可视量。
-           pn_omega 用与下降段相同的公式（相机项 + 机体角速率）。
-           yaw_u 是加速度内环在 a_cmd = 0 时的试算输出，只用于确认
-           「a_meas 为正时 yaw_u 应为负」这条负反馈关系，不驱动舵机。 */
+        float gz_dps_dbg =
+            DART_INS_YAW_RATE_RAD_S(&ins_snapshot) * DART_RAD_TO_DEG;
+        /* 与下降段同公式：相机项 + 机体角速率，得到惯性系视线角速率。 */
         dbg_pn_omega = constrain_float(
             (DART_CAMERA_YAW_SIGN * DartControl.vision_x_ekf.rate +
              DART_INS_YAW_RATE_RAD_S(&ins_snapshot)) * DART_RAD_TO_DEG,
             -DART_PN_RATE_MAX, DART_PN_RATE_MAX);
-        dbg_yaw_u = -DART_ACCEL_K_A * dbg_a_meas -
-                    DART_ACCEL_K_Q *
-                    DART_INS_YAW_RATE_RAD_S(&ins_snapshot) * DART_RAD_TO_DEG;
+#if (DART_YAW_PN_MODE == DART_YAW_PN_MODE_ACCEL)
+        /* 台架可视化：把飞行时真正会算出的 a_cmd 与 yaw 输出复现一遍，
+           只写遥测、不驱动舵机。用来确认「目标往哪边走 → yaw_u 该往哪边打」。 */
+        {
+            float a_cmd_dbg = DART_PN_SIGN * DART_PN_N * DART_PN_V_NOM *
+                              (dbg_pn_omega * DART_DEG_TO_RAD);
+            a_cmd_dbg = constrain_float(a_cmd_dbg,
+                                        -DART_ACCEL_CMD_MAX, DART_ACCEL_CMD_MAX);
+            dbg_a_cmd = a_cmd_dbg;
+            dbg_yaw_u = constrain_float(
+                DART_ACCEL_K_A * (a_cmd_dbg - dbg_a_meas) -
+                DART_ACCEL_K_Q * gz_dps_dbg,
+                -DART_ACCEL_OUT_MAX, DART_ACCEL_OUT_MAX);
+        }
+#elif (DART_YAW_PN_MODE == DART_YAW_PN_MODE_RATE)
+        {
+            float rate_cmd_dbg = DART_PN_SIGN * DART_PN_N * dbg_pn_omega;
+            rate_cmd_dbg = constrain_float(rate_cmd_dbg,
+                                           -DART_PN_RATE_MAX, DART_PN_RATE_MAX);
+            dbg_yaw_u = constrain_float(
+                DART_PN_K_RATE * (rate_cmd_dbg - gz_dps_dbg),
+                -DART_PID_MAX_OUTPUT_US, DART_PID_MAX_OUTPUT_US);
+        }
+#else
+        dbg_yaw_u = constrain_float(-DART_ACCEL_K_A * dbg_a_meas -
+                                    DART_ACCEL_K_Q * gz_dps_dbg,
+                                    -DART_ACCEL_OUT_MAX, DART_ACCEL_OUT_MAX);
+#endif
     }
 
     /* 若舵机未就绪：先在 IMU_READY 标定 yaw 零偏，再初始化舵机 */

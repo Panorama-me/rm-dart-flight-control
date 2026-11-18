@@ -444,6 +444,9 @@ extern "C" {
 #define DART_YAW_PN_MODE                         2
 
 #define DART_PN_N                                3.0f   /* 比例导引系数，2~5 */
+/* PN 方向符号：+1 = 视线角速率与 yaw 指令同号。台架上「目标向左移动时
+   yaw_u 应为负（左转）」若相反，把这个改成 -1.0f 即可，不用改公式。 */
+#define DART_PN_SIGN                             1.0f
 #define DART_PN_RATE_MAX                        90.0f   /* 速率指令限幅（度/秒） */
 #define DART_PN_V_NOM                           22.0f   /* 标称地速（米/秒），只用于把转速换成加速度 */
 #define DART_PN_K_RATE                           4.0f   /* 速率环增益（微秒 / (度/秒)） */
