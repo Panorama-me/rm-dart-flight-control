@@ -19,7 +19,7 @@ print("=== BOOT ===")
 # UART
 # =========================
 UART_ID = 3
-UART_BAUDRATE = 115200
+UART_BAUDRATE = 460800
 uart = UART(UART_ID, UART_BAUDRATE, read_buf_len=2048)
 
 # =========================
@@ -112,7 +112,7 @@ THRESHOLDS1 = [(9, 100, -102, -25, 0, 127)]
 
 FRAME_SIZE = sensor.QVGA
 PIXFORMAT = sensor.RGB565
-EXPOSURE_US = 300
+EXPOSURE_US = 100
 SKIP_FRAMES_MS = 1500
 
 GUIDE_CX = BLOB_ROI[0] + BLOB_ROI[2] // 2
@@ -136,14 +136,17 @@ ACK_FRAME_LEN = 4
 RESET_SOF = 0x5B
 RESET_FRAME_LEN = 4
 
-# 遥测：F103 -> OpenMV，37 字节
+# 遥测：F103 -> OpenMV，45 字节
 TELEM_SOF = 0x55
 TELEM_EOF = 0xFE
-TELEM_FRAME_LEN = 37
+TELEM_FRAME_LEN = 45
 TELEM_ANGLE_SCALE = 100.0
 TELEM_GYRO_SCALE = 10.0
 TELEM_LOS_SCALE = 100.0
 TELEM_SERVO_SCALE = 10.0
+TELEM_ACCEL_SCALE = 100.0
+TELEM_RATE_SCALE = 100.0
+TELEM_US_SCALE = 1.0
 
 T_GYRO_X_H = 1
 T_GYRO_X_L = 2
@@ -179,8 +182,16 @@ T_SERVO3_L = 31
 T_SERVO4_H = 32
 T_SERVO4_L = 33
 T_DBG_FLAGS_INDEX = 34
-T_EOF_INDEX = 35
-T_CRC_INDEX = 36
+T_A_MEAS_H = 35
+T_A_MEAS_L = 36
+T_A_CMD_H = 37
+T_A_CMD_L = 38
+T_PN_OMEGA_H = 39
+T_PN_OMEGA_L = 40
+T_YAW_U_H = 41
+T_YAW_U_L = 42
+T_EOF_INDEX = 43
+T_CRC_INDEX = 44
 
 F_LINK_VALID = 0x01
 F_TARGET_VALID = 0x02
@@ -350,6 +361,10 @@ telem_los_yaw = 0.0
 telem_los_pitch = 0.0
 telem_servo = [0.0, 0.0, 0.0, 0.0]
 telem_dbg_flags = 0
+telem_a_meas = 0.0
+telem_a_cmd = 0.0
+telem_pn_omega = 0.0
+telem_yaw_u = 0.0
 telem_link = 0
 telem_last_ms = 0
 telem_ok_printed = False
@@ -434,6 +449,14 @@ def poll_telemetry():
         telem_servo[3] = s16(telem_buf[b + T_SERVO4_H],
                              telem_buf[b + T_SERVO4_L]) / TELEM_SERVO_SCALE
         telem_dbg_flags = telem_buf[b + T_DBG_FLAGS_INDEX]
+        telem_a_meas = s16(telem_buf[b + T_A_MEAS_H],
+                           telem_buf[b + T_A_MEAS_L]) / TELEM_ACCEL_SCALE
+        telem_a_cmd = s16(telem_buf[b + T_A_CMD_H],
+                          telem_buf[b + T_A_CMD_L]) / TELEM_ACCEL_SCALE
+        telem_pn_omega = s16(telem_buf[b + T_PN_OMEGA_H],
+                             telem_buf[b + T_PN_OMEGA_L]) / TELEM_RATE_SCALE
+        telem_yaw_u = s16(telem_buf[b + T_YAW_U_H],
+                          telem_buf[b + T_YAW_U_L]) / TELEM_US_SCALE
 
         # Latch the flight transitions from every valid UART frame. The camera
         # loop may skip a short LAUNCHED state while writing an image frame.
@@ -624,7 +647,8 @@ def append_telemetry_log(now_ms, frame_number):
             stream.write("t_ms,frame,mode,state,flags,gx_dps,gy_dps,gz_dps,"
                          "pitch_deg,yaw_deg,roll_deg,out_pitch_deg,"
                          "out_yaw_deg,out_roll_deg,los_yaw_deg,los_pitch_deg,"
-                         "s1_deg,s2_deg,s3_deg,s4_deg\n")
+                         "s1_deg,s2_deg,s3_deg,s4_deg,"
+                         "a_meas_ms2,a_cmd_ms2,pn_omega_dps,yaw_u_us\n")
         except Exception as e:
             if stream is not None:
                 try:
@@ -643,7 +667,7 @@ def append_telemetry_log(now_ms, frame_number):
     try:
         telem_log_stream.write(
             "%d,%d,%d,%d,%d,%.1f,%.1f,%.1f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,"
-            "%.2f,%.2f,%.1f,%.1f,%.1f,%.1f\n"
+            "%.2f,%.2f,%.1f,%.1f,%.1f,%.1f,%.2f,%.2f,%.1f,%.1f\n"
             % (time.ticks_diff(now_ms, start), frame_number,
                telem_mode, telem_state, telem_flags,
                telem_gyro_x, telem_gyro_y, telem_gyro_z,
@@ -651,7 +675,8 @@ def append_telemetry_log(now_ms, frame_number):
                telem_out_pitch, telem_out_yaw, telem_out_roll,
                telem_los_yaw, telem_los_pitch,
                telem_servo[0], telem_servo[1],
-               telem_servo[2], telem_servo[3]))
+               telem_servo[2], telem_servo[3],
+               telem_a_meas, telem_a_cmd, telem_pn_omega, telem_yaw_u))
     except Exception as e:
         print("[DEBUG] telem log write err:", e)
         stop_telemetry_log()

@@ -133,8 +133,17 @@ static float calculate_axis_pid(PID_t *pid, float error, float rate_rad_s)
  * @param kp 比例系数
  * @param ki 积分系数
  * @param kd 微分系数
+ * @param changing_a 积分分离参数 A（误差大于 A+B 时完全停止积分）
+ * @param changing_b 积分分离参数 B（误差小于等于 B 时全额积分）
+ * @param improve PID 改进标志位，各轴可以不同
+ *
+ * A/B 与 improve 做成入参而不是直接用全局宏：视觉 yaw 需要打开
+ * ChangingIntegrationRate（全局标志里没有它，所以那几个 A/B 一直是死参数），
+ * 而自稳段保持原样、行为不变。
  */
-static void init_axis_pid(PID_t *pid, float kp, float ki, float kd)
+static void init_axis_pid(PID_t *pid, float kp, float ki, float kd,
+                          float changing_a, float changing_b,
+                          uint8_t improve)
 {
     PID_Init(pid,
              DART_PID_MAX_OUTPUT_US,
@@ -143,12 +152,12 @@ static void init_axis_pid(PID_t *pid, float kp, float ki, float kd)
              kp,
              ki,
              kd,
-             DART_PID_CHANGING_A,
-             DART_PID_CHANGING_B,
+             changing_a,
+             changing_b,
              DART_PID_OUTPUT_LPF_RC,
              DART_PID_DERIVATIVE_LPF_RC,
              DART_PID_OLS_ORDER,
-             DART_PID_IMPROVE_FLAGS);
+             improve);
     pid->User_Func2_f = gyro_rate_derivative;
 }
 /*
@@ -1014,6 +1023,12 @@ static void run_ascent_stabilization(const INS_t *ins)
  * 使用视线角（LOS）和惯性系视线角速率，按前视追踪（lead pursuit）计算期望姿态，
  * 再经当前横滚角进行坐标变换，最终由视觉 PID 参数转换为舵机输出。
  */
+/* yaw 制导调试量：控制任务写、遥测任务读；32 位对齐，存取原子。 */
+static float dbg_a_meas;
+static float dbg_a_cmd;
+static float dbg_pn_omega;
+static float dbg_yaw_u;
+
 static void run_descent_guidance(const INS_t *ins)
 {
     float camera_yaw_rate;
@@ -1025,6 +1040,9 @@ static void run_descent_guidance(const INS_t *ins)
     float sin_roll;
     float yaw_command;
     float pitch_command;
+    float pn_omega_yaw;
+    float yaw_rate_now;
+    float yaw_u;
 #if (DART_DESCENT_LOCK_LAST_VISUAL_COMMAND_ENABLE && !DART_DESCENT_GLIDE_ENABLE)
     uint32_t target_age_ms;
 #endif
@@ -1144,6 +1162,9 @@ static void run_descent_guidance(const INS_t *ins)
     camera_pitch_rate = DART_CAMERA_PITCH_SIGN *
                         (DartControl.vision_y_ekf.rate -
                          DART_INS_PITCH_RATE_RAD_S(ins)) * DART_RAD_TO_DEG;
+    /* PN 用未钳位的角速率：原来的 15 度/秒是给前视项留的，对 PN 太紧。 */
+    pn_omega_yaw = constrain_float(camera_yaw_rate,
+                                   -DART_PN_RATE_MAX, DART_PN_RATE_MAX);
     camera_yaw_rate = constrain_float(camera_yaw_rate,
                                       -DART_LOS_RATE_LIMIT_DEG_S,
                                       DART_LOS_RATE_LIMIT_DEG_S);
@@ -1192,12 +1213,42 @@ static void run_descent_guidance(const INS_t *ins)
     DartControl.telemetry.output_pitch_deg =
         DART_DESCENT_PITCH_OUTPUT_SIGN * pitch_command;
 
-    /* 视觉控制 yaw/pitch（视觉 PID 参数）；roll 继续由补偿/自稳保持。 */
-    DartControl.telemetry.yaw_output_us = 0.0f;
+    /* 视觉控制 yaw/pitch；roll 继续由补偿/自稳保持。
+       yaw 三选一（DART_YAW_PN_MODE）：0 原角度 PID / 1 速率型 PN / 2 PN+加速度内环。 */
+    yaw_rate_now = DART_INS_YAW_RATE_RAD_S(ins) * DART_RAD_TO_DEG;
+    yaw_u = 0.0f;
+    dbg_pn_omega = pn_omega_yaw;
+    dbg_a_meas = 0.0f;
+    dbg_a_cmd = 0.0f;
     if (DART_MODE != DART_MODE_PITCH)
-        DartControl.telemetry.yaw_output_us =
-            calculate_axis_pid(&DartControl.yaw_vision_pid, yaw_command,
-                               DART_INS_YAW_RATE_RAD_S(ins));
+    {
+#if (DART_YAW_PN_MODE == DART_YAW_PN_MODE_RATE)
+        float rate_cmd = DART_PN_N * pn_omega_yaw;
+        rate_cmd = constrain_float(rate_cmd,
+                                   -DART_PN_RATE_MAX, DART_PN_RATE_MAX);
+        yaw_u = DART_PN_K_RATE * (rate_cmd - yaw_rate_now);
+#elif (DART_YAW_PN_MODE == DART_YAW_PN_MODE_ACCEL)
+        /* 外环 PN 给横向加速度指令，内环用加速度计闭环到力。
+           a_cmd = N * V_nom * omega，V_nom 只在这里出现。 */
+        float a_cmd = DART_PN_N * DART_PN_V_NOM *
+                      (pn_omega_yaw * DART_DEG_TO_RAD);
+        float a_meas = DART_ACCEL_YAW_SIGN *
+                       ins->MotionAccel_b[DART_ACCEL_YAW_AXIS];
+        a_cmd = constrain_float(a_cmd,
+                                -DART_ACCEL_CMD_MAX, DART_ACCEL_CMD_MAX);
+        yaw_u = DART_ACCEL_K_A * (a_cmd - a_meas) -
+                DART_ACCEL_K_Q * yaw_rate_now;
+        yaw_u = constrain_float(yaw_u,
+                                -DART_ACCEL_OUT_MAX, DART_ACCEL_OUT_MAX);
+        dbg_a_meas = a_meas;
+        dbg_a_cmd = a_cmd;
+#else
+        yaw_u = calculate_axis_pid(&DartControl.yaw_vision_pid, yaw_command,
+                                   DART_INS_YAW_RATE_RAD_S(ins));
+#endif
+    }
+    dbg_yaw_u = yaw_u;
+    DartControl.telemetry.yaw_output_us = yaw_u;
 
     DartControl.telemetry.pitch_output_us = 0.0f;
     if (DART_MODE != DART_MODE_YAW)
@@ -1350,6 +1401,14 @@ void attitude_telemetry_send(void)
     int16_t los_yaw_raw;
     int16_t los_pitch_raw;
     int16_t servo_raw[4];
+    int16_t a_meas_raw;
+    int16_t a_cmd_raw;
+    int16_t pn_omega_raw;
+    int16_t yaw_u_raw;
+    float a_meas_snap;
+    float a_cmd_snap;
+    float pn_omega_snap;
+    float yaw_u_snap;
     float los_yaw_deg_out;
     float los_pitch_deg_out;
     uint8_t dbg_flags;
@@ -1384,6 +1443,10 @@ void attitude_telemetry_send(void)
     output_yaw_deg = DartControl.telemetry.output_yaw_deg;
     output_roll_deg = DartControl.telemetry.output_roll_deg;
     output_valid = DartControl.telemetry.output_valid;
+    a_meas_snap = dbg_a_meas;
+    a_cmd_snap = dbg_a_cmd;
+    pn_omega_snap = dbg_pn_omega;
+    yaw_u_snap = dbg_yaw_u;
     if (primask == 0U)
         __enable_irq();
 
@@ -1463,6 +1526,20 @@ void attitude_telemetry_send(void)
     tx_frame[DART_ATT_SERVO4_H_INDEX] = (uint8_t)((uint16_t)servo_raw[3] >> 8U);
     tx_frame[DART_ATT_SERVO4_L_INDEX] = (uint8_t)servo_raw[3];
     tx_frame[DART_ATT_DBG_FLAGS_INDEX] = dbg_flags;
+
+    /* yaw 制导调试量：加速度环的反馈/指令、PN 角速率、yaw 输出。 */
+    a_meas_raw = (int16_t)(a_meas_snap * DART_ATT_ACCEL_SCALE);
+    a_cmd_raw = (int16_t)(a_cmd_snap * DART_ATT_ACCEL_SCALE);
+    pn_omega_raw = (int16_t)(pn_omega_snap * DART_ATT_RATE_SCALE);
+    yaw_u_raw = (int16_t)(yaw_u_snap * DART_ATT_US_SCALE);
+    tx_frame[DART_ATT_A_MEAS_H_INDEX] = (uint8_t)((uint16_t)a_meas_raw >> 8U);
+    tx_frame[DART_ATT_A_MEAS_L_INDEX] = (uint8_t)a_meas_raw;
+    tx_frame[DART_ATT_A_CMD_H_INDEX] = (uint8_t)((uint16_t)a_cmd_raw >> 8U);
+    tx_frame[DART_ATT_A_CMD_L_INDEX] = (uint8_t)a_cmd_raw;
+    tx_frame[DART_ATT_PN_OMEGA_H_INDEX] = (uint8_t)((uint16_t)pn_omega_raw >> 8U);
+    tx_frame[DART_ATT_PN_OMEGA_L_INDEX] = (uint8_t)pn_omega_raw;
+    tx_frame[DART_ATT_YAW_U_H_INDEX] = (uint8_t)((uint16_t)yaw_u_raw >> 8U);
+    tx_frame[DART_ATT_YAW_U_L_INDEX] = (uint8_t)yaw_u_raw;
     tx_frame[DART_ATT_EOF_INDEX] = DART_ATT_EOF;
     tx_frame[DART_ATT_CRC_INDEX] =
         vision_crc8(tx_frame, DART_ATT_CRC_INDEX);
@@ -1559,15 +1636,25 @@ void control_Init(void)
 
     /* 初始化各轴 PID：yaw/pitch 分别使用自稳与视觉两套参数 */
     init_axis_pid(&DartControl.yaw_pid,
-                  DART_YAW_STAB_KP, DART_YAW_STAB_KI, DART_YAW_STAB_KD);
+                  DART_YAW_STAB_KP, DART_YAW_STAB_KI, DART_YAW_STAB_KD,
+                  DART_PID_CHANGING_A, DART_PID_CHANGING_B,
+                  DART_PID_IMPROVE_FLAGS);
     init_axis_pid(&DartControl.yaw_vision_pid,
-                  DART_YAW_VISION_KP, DART_YAW_VISION_KI, DART_YAW_VISION_KD);
+                  DART_YAW_VISION_KP, DART_YAW_VISION_KI, DART_YAW_VISION_KD,
+                  DART_YAW_VISION_CHANGING_A, DART_YAW_VISION_CHANGING_B,
+                  (DART_PID_IMPROVE_FLAGS | ChangingIntegrationRate));
     init_axis_pid(&DartControl.pitch_pid,
-                  DART_PITCH_STAB_KP, DART_PITCH_STAB_KI, DART_PITCH_STAB_KD);
+                  DART_PITCH_STAB_KP, DART_PITCH_STAB_KI, DART_PITCH_STAB_KD,
+                  DART_PID_CHANGING_A, DART_PID_CHANGING_B,
+                  DART_PID_IMPROVE_FLAGS);
     init_axis_pid(&DartControl.pitch_vision_pid,
-                  DART_PITCH_VISION_KP, DART_PITCH_VISION_KI, DART_PITCH_VISION_KD);
+                  DART_PITCH_VISION_KP, DART_PITCH_VISION_KI, DART_PITCH_VISION_KD,
+                  DART_PID_CHANGING_A, DART_PID_CHANGING_B,
+                  DART_PID_IMPROVE_FLAGS);
     init_axis_pid(&DartControl.roll_pid,
-                  DART_ROLL_KP, DART_ROLL_KI, DART_ROLL_KD);
+                  DART_ROLL_KP, DART_ROLL_KI, DART_ROLL_KD,
+                  DART_PID_CHANGING_A, DART_PID_CHANGING_B,
+                  DART_PID_IMPROVE_FLAGS);
 
     set_state(DART_STATE_READY);
     DartControl.last_control_ms = HAL_GetTick();

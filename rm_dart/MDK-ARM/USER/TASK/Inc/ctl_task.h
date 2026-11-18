@@ -68,7 +68,7 @@ extern "C" {
    gyro 单位 0.1 deg/s，角度单位 0.01 deg；
    LOS 为相对上电 1 s 参考角的增量（0.01 deg），舵机角 0.1 deg；
    CRC 覆盖字节 0..35。 */
-#define DART_ATT_FRAME_LEN                    37U
+#define DART_ATT_FRAME_LEN                    45U
 #define DART_ATT_SOF_INDEX                     0U
 #define DART_ATT_GYRO_X_H_INDEX                1U
 #define DART_ATT_GYRO_X_L_INDEX                2U
@@ -104,14 +104,27 @@ extern "C" {
 #define DART_ATT_SERVO4_H_INDEX               32U
 #define DART_ATT_SERVO4_L_INDEX               33U
 #define DART_ATT_DBG_FLAGS_INDEX              34U
-#define DART_ATT_EOF_INDEX                    35U
-#define DART_ATT_CRC_INDEX                    36U
+/* 2026-11-18 新增：yaw 制导调试量（PN + 加速度内环）。
+   帧长 37 -> 45，EOF/CRC 后移到 43/44。上位机 main.py 必须同步。 */
+#define DART_ATT_A_MEAS_H_INDEX               35U
+#define DART_ATT_A_MEAS_L_INDEX               36U
+#define DART_ATT_A_CMD_H_INDEX                37U
+#define DART_ATT_A_CMD_L_INDEX                38U
+#define DART_ATT_PN_OMEGA_H_INDEX             39U
+#define DART_ATT_PN_OMEGA_L_INDEX             40U
+#define DART_ATT_YAW_U_H_INDEX                41U
+#define DART_ATT_YAW_U_L_INDEX                42U
+#define DART_ATT_EOF_INDEX                    43U
+#define DART_ATT_CRC_INDEX                    44U
 #define DART_ATT_SOF                        0x55U
 #define DART_ATT_EOF                        0xFEU
 #define DART_ATT_ANGLE_SCALE               100.0f
 #define DART_ATT_GYRO_SCALE                 10.0f
 #define DART_ATT_LOS_SCALE                 100.0f   /* LOS 增量 0.01 度 */
 #define DART_ATT_SERVO_SCALE                10.0f   /* 舵机角 0.1 度 */
+#define DART_ATT_ACCEL_SCALE               100.0f   /* 加速度 0.01 m/s^2 */
+#define DART_ATT_RATE_SCALE                100.0f   /* 角速率 0.01 度/秒 */
+#define DART_ATT_US_SCALE                    1.0f   /* 舵面输出 1 微秒 */
 #define DART_ATT_SERVO_DEG_PER_US           0.09f   /* 1550 us = 0 度，±1000 us = ±90 度 */
 #define DART_DBG_FLAG_REF_VALID             0x01U   /* 调试标志 bit0：上电参考角已捕获 */
 #define DART_ATT_FLAG_LINK_VALID            0x01U
@@ -275,8 +288,8 @@ extern "C" {
 
 /* 视觉段（有目标）：比滑翔段更激进，GAIN 8.0 对应时间常数约 0.125 s。
    与滑翔段共用同一个速率环，但增益和限幅独立——改一段不影响另一段。 */
-#define DART_VISION_PITCH_RATE_GAIN           5.0f     /* 视觉指令 -> 目标角速率（1/秒）；2026-11-16 由 8 降 */
-#define DART_VISION_PITCH_MAX_RATE          100.0f     /* 视觉段最大低头速率（度/秒） */
+#define DART_VISION_PITCH_RATE_GAIN           6.0f     /* 视觉指令 -> 目标角速率（1/秒）；2026-11-16 由 8 降 */
+#define DART_VISION_PITCH_MAX_RATE          80.0f     /* 视觉段最大低头速率（度/秒） */
 
 /* 速率环增益（微秒 / (度/秒)），两段共用。 */
 #define DART_GLIDE_RATE_KD                    2.5f
@@ -392,9 +405,52 @@ extern "C" {
    暂时不动：2 Hz 周期下把前视加到 0.33 s 会预测到反号（11.15 实测教训）。
    待摆幅压到 5 度以内再放开。 */
 
+/* --- 视觉 yaw 的积分与积分分离窗口（2026-11-18 新增）---
+   11.18 实测：过中心瞬间舵面已回落到接近段峰值的 76%，机头随后被气动回正力矩
+   掰回原航向（回摆量 = 偏转量的 86~106%），弹道没有改变。要让弹道真的弯，必须在
+   视线误差归零后仍保持舵偏（维持攻角）——这件事只能由积分做：P 项在误差为 0 时
+   输出 0，D 项在角速率为 0 时输出 0，两者都守不住静态攻角。
+
+   为什么 KI 取 25：
+   目标的绝对方位变化率 13~29 度/秒，等效角度增益 3.7 度/秒/度（1 度指令换 3.7 度/秒），
+   稳态滞后 = 29 / 3.7 = 7.8 度；要把这 7.8 度补掉，需要 12 微秒/度 x 7.8 = 94 微秒
+   的偏置，而积分限幅是 120 微秒，刚好装得下。
+   误差 8~10 度、持续 0.4 秒的接近段可攒 40~60 微秒（限幅的 1/3~1/2），
+   先把稳态滞后压掉一半；若不够再往上加。
+   稳定性：2 Hz 处积分只贡献 25/12.6 = 2 微秒/度（KP 的 17%），相位损失约 9 度，
+   不会把 1.06 的 G*T 推过 1.57 的边界。
+
+   为什么单独给视觉 yaw 一套 A/B（10/10）：
+   全局的 A=10/B=2 在误差大于 12 度时把积分完全关掉，而下降段误差常态是 5~15 度，
+   等于装了积分却几乎不工作（11.18 那几次加 KI 从数据里看不出任何痕迹）。
+   10/10 表示 10 度以内全额积分、10~20 度线性降到 0，只挡真正的饱和。 */
 #define DART_YAW_VISION_KP                       12.0f
-#define DART_YAW_VISION_KI                       0.0f
+#define DART_YAW_VISION_KI                       25.0f
 #define DART_YAW_VISION_KD                       3.0f
+#define DART_YAW_VISION_CHANGING_A               10.0f
+#define DART_YAW_VISION_CHANGING_B               10.0f
+
+/* --- yaw 制导结构（2026-11-18）---
+   0 = 原角度 PID（回退用）
+   1 = 速率型 PN：机头按 N 倍视线角速率转，不需要速度、不需要加速度计
+   2 = PN + 加速度内环：外环给横向加速度指令，内环用加速度计闭环到力
+   先做台架符号确认（DART_ACCEL_YAW_SIGN / AXIS），确认前建议 1。 */
+#define DART_YAW_PN_MODE_OFF                     0
+#define DART_YAW_PN_MODE_RATE                    1
+#define DART_YAW_PN_MODE_ACCEL                   2
+#define DART_YAW_PN_MODE                         2
+
+#define DART_PN_N                                3.0f   /* 比例导引系数，2~5 */
+#define DART_PN_RATE_MAX                        90.0f   /* 速率指令限幅（度/秒） */
+#define DART_PN_V_NOM                           22.0f   /* 标称地速（米/秒），只用于把转速换成加速度 */
+#define DART_PN_K_RATE                           4.0f   /* 速率环增益（微秒 / (度/秒)） */
+
+#define DART_ACCEL_YAW_AXIS                        1   /* MotionAccel_b 里对应偏航侧向力的轴 */
+#define DART_ACCEL_YAW_SIGN                      1.0f  /* 台架确认！错了就是正反馈 */
+#define DART_ACCEL_K_A                          10.0f   /* 加速度环增益（微秒 / (米/秒^2)） */
+#define DART_ACCEL_K_Q                           3.0f   /* 速率阻尼（微秒 / (度/秒)） */
+#define DART_ACCEL_CMD_MAX                      30.0f   /* 加速度指令限幅（米/秒^2，约 3g） */
+#define DART_ACCEL_OUT_MAX                     250.0f   /* 加速度环输出限幅（微秒），首飞保守 */
 #define DART_PITCH_VISION_KP                     20.0f
 #define DART_PITCH_VISION_KI                     0.00f
 #define DART_PITCH_VISION_KD                     3.00f
