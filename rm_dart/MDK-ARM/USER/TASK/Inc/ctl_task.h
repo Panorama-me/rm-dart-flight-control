@@ -159,7 +159,7 @@ extern "C" {
 #define DART_MODE_DEBUG                       4U
 /* 编译期选择工作模式；台架调试时改成 DART_MODE_DEBUG：
    不检测起飞、不驱动舵机，只识别目标并计算/上报视觉指令。 */
-#define DART_MODE                            DART_MODE_BOTH   /* 台架视觉测试；飞之前改回 DART_MODE_BOTH */
+#define DART_MODE                            DART_MODE_BOTH   /* 两轴制导（正常飞行配置） */
 
 #define DART_IMAGE_WIDTH_PX                  320.0f    /* OpenMV 输出=- QVGA，宽度 320 */
 #define DART_IMAGE_HEIGHT_PX                 240.0f    /* OpenMV 输出 QVGA，高度 240 */
