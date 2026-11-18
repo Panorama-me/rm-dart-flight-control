@@ -1232,6 +1232,8 @@ static void run_descent_guidance(const INS_t *ins)
         rate_cmd = constrain_float(rate_cmd,
                                    -DART_PN_RATE_MAX, DART_PN_RATE_MAX);
         yaw_u = DART_PN_K_RATE * (rate_cmd - yaw_rate_now);
+        yaw_u = constrain_float(yaw_u,
+                                -DART_ACCEL_OUT_MAX, DART_ACCEL_OUT_MAX);
 #elif (DART_YAW_PN_MODE == DART_YAW_PN_MODE_ACCEL)
         /* 外环 PN 给横向加速度指令，内环用加速度计闭环到力。
            a_cmd = N * V_nom * omega，V_nom 只在这里出现。 */

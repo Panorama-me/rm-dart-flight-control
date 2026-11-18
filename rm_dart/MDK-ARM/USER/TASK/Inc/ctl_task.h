@@ -159,9 +159,9 @@ extern "C" {
 #define DART_MODE_DEBUG                       4U
 /* 编译期选择工作模式；台架调试时改成 DART_MODE_DEBUG：
    不检测起飞、不驱动舵机，只识别目标并计算/上报视觉指令。 */
-#define DART_MODE                            DART_MODE_BOTH
+#define DART_MODE                            DART_MODE_BOTH   /* 台架视觉测试；飞之前改回 DART_MODE_BOTH */
 
-#define DART_IMAGE_WIDTH_PX                  320.0f    /* OpenMV 输出 QVGA，宽度 320 */
+#define DART_IMAGE_WIDTH_PX                  320.0f    /* OpenMV 输出=- QVGA，宽度 320 */
 #define DART_IMAGE_HEIGHT_PX                 240.0f    /* OpenMV 输出 QVGA，高度 240 */
 /* 视觉焦距（像素）。OV5640 全幅 2592x1944、水平 68°：
    f_sensor = 1296/tan(34°) = 1921 px。
@@ -449,13 +449,13 @@ extern "C" {
 #define DART_PN_SIGN                             1.0f
 #define DART_PN_RATE_MAX                        90.0f   /* 速率指令限幅（度/秒） */
 #define DART_PN_V_NOM                           22.0f   /* 标称地速（米/秒），只用于把转速换成加速度 */
-#define DART_PN_K_RATE                           4.0f   /* 速率环增益（微秒 / (度/秒)） */
+#define DART_PN_K_RATE                           6.0f   /* 速率环增益（微秒 / (度/秒)）；2026-11-18 由 4 调到 6：11.18 反推机体 G=0.25 度/秒/微秒，K=4 时有效 N 只剩 1.5 追得慢，6 是脱靶与振动的折中 */
 
 #define DART_ACCEL_YAW_AXIS                        1   /* MotionAccel_b 里对应偏航侧向力的轴 */
 #define DART_ACCEL_YAW_SIGN                      1.0f  /* 台架确认！错了就是正反馈 */
-#define DART_ACCEL_K_A                          10.0f   /* 加速度环增益（微秒 / (米/秒^2)） */
-#define DART_ACCEL_K_Q                           3.0f   /* 速率阻尼（微秒 / (度/秒)） */
-#define DART_ACCEL_CMD_MAX                      30.0f   /* 加速度指令限幅（米/秒^2，约 3g） */
+#define DART_ACCEL_K_A                          14.0f   /* 加速度环增益（微秒 / (米/秒^2)）；等效速率增益 K_A*V=280 微秒/(rad/s)=4.9 微秒/(度/秒) */
+#define DART_ACCEL_K_Q                           1.0f   /* 显式速率阻尼。a_meas 已含 V*gz 的速率反馈，K_Q 再加就重复刹车、拖低有效 N；留 1 作非协调转弯时的保险下限 */
+#define DART_ACCEL_CMD_MAX                      25.0f   /* 加速度指令限幅：满舵 250 微秒 -> 62 度/秒 -> 20 m/s 下 21.7 米/秒^2，要 30 只会把内环顶死成继电器 */
 #define DART_ACCEL_OUT_MAX                     250.0f   /* 加速度环输出限幅（微秒），首飞保守 */
 #define DART_PITCH_VISION_KP                     20.0f
 #define DART_PITCH_VISION_KI                     0.00f

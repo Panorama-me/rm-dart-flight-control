@@ -122,7 +122,7 @@ los_yaw_deg_out = wrap_180(yaw_deg - debug_ref_yaw_deg) + vision.los_yaw_deg;
 | roll | 10.0 | **8.0** | 1.0 |
 | **视觉 yaw** | **12.0** | **25.0** | **3.0** |
 | yaw 制导模式 | `DART_YAW_PN_MODE = 2`（PN + 加速度内环）；1 = 只速率 PN，0 = 回退原 PID |
-| PN / 加速度环 | N=3、V_nom=22 m/s、K_A=10 µs/(m/s²)、K_Q=3 µs/(°/s)、a_cmd 限 ±30 m/s²、输出限 ±250 µs |
+| PN / 加速度环 | N=3、V_nom=22 m/s、速率环 K_RATE=6 µs/(°/s)（模式1）；K_A=14 µs/(m/s²)、K_Q=1 µs/(°/s)、a_cmd 限 ±25 m/s²、输出限 ±250 µs（模式2）。11.18 反推机体 G=0.25°/s/µs、延迟约 130 ms，据此仿真定标 |
 | 视觉 pitch | 20.0 | 0.0 | 3.0 |
 
 公共：输出限幅 ±420 µs、积分限幅 ±120 µs、死区 0.20°、D 项来源是**陀螺角速率**。
