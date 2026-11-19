@@ -1831,6 +1831,8 @@ void control_Task(void)
        SERVO_READY/DEBUG）时遥测里永远是 0，台架没法验加速度轴和符号。 */
     dbg_a_meas = DART_ACCEL_YAW_SIGN *
                  ins_snapshot.MotionAccel_b[DART_ACCEL_YAW_AXIS];
+    /* 遥测槽位自 2026-11-19 起改报 dpsi，MODE 0 下 dbg_a_meas 无人读取。 */
+    (void)dbg_a_meas;
     dbg_a_cmd = 0.0f;              /* 只有下降段视觉引导才产生加速度指令 */
     dbg_yaw_u = DartControl.telemetry.yaw_output_us;
     if ((DartControl.flight_state <= DART_STATE_SERVO_READY) ||

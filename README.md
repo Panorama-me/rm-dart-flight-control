@@ -20,7 +20,7 @@ STM32F103 + OpenMV 的双控制器原型工程。F103 负责姿态解算、起�
 | 起飞检测 | 去重力机体 X 轴加速度阈值 + 连续 5 周期确认 | `Control_Task.c` |
 | 上升段 | 保持起飞 yaw/roll；pitch 两阶段补偿后锁存；识别到目标时 yaw 切视觉 | `run_ascent_stabilization()` |
 | 下降段 | 前视追踪（视线角 + 前视时间×惯性系视线角速率）+ 视觉 PID + roll 坐标投影 | `run_descent_guidance()` |
-| 视觉滤波 | 默认 RAW_RATE（位置不过滤、仅轻滤角速率），可切回 EKF | `update_vision_filter()` |
+| 视觉滤波 | 默认 **EKF**（角+角速率双状态，2026-11-20 切换）；可切回 RAW_RATE（差分+15ms 低通） | `update_vision_filter()`、`DART_VISION_FILTER_MODE` |
 | 模式握手 | 下位机决定模式，握手帧携带 default/pitch/yaw/both | `openmv_handshake_send()` |
 | 遥测 | 37 字节、50 Hz，含陀螺、姿态、输出目标角、LOS 增量、四路舵机角、状态、flags | `attitude_telemetry_send()` |
 | 目标识别 | 绿色色块 + 跟踪 ROI + 3 帧时间中值 | `main.py` |

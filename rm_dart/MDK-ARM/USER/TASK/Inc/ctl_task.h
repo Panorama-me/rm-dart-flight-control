@@ -159,7 +159,7 @@ extern "C" {
 #define DART_MODE_DEBUG                       4U
 /* 编译期选择工作模式；台架调试时改成 DART_MODE_DEBUG：
    不检测起飞、不驱动舵机，只识别目标并计算/上报视觉指令。 */
-#define DART_MODE                            DART_MODE_DEBUG   /* 两轴制导（正常飞行配置） */
+#define DART_MODE                            DART_MODE_BOTH   /* 两轴制导（正常飞行配置） */
 
 #define DART_IMAGE_WIDTH_PX                  320.0f    /* OpenMV 输出=- QVGA，宽度 320 */
 #define DART_IMAGE_HEIGHT_PX                 240.0f    /* OpenMV 输出 QVGA，高度 240 */
@@ -211,7 +211,10 @@ extern "C" {
    当前 ROI 半宽只有几十像素，180 像素的门限等于不设门，什么跳变都放进来；
    R 相对 Q 太小时增益过高，rate 跟着单帧噪声跳。
    Q=2 让角速度模型更信自己，R=25 压像素噪声，GATE=40 只挡真跳变。
-   注意：当前 DART_VISION_FILTER_MODE 仍是 RAW_RATE，这三个值是切换 EKF 时的备用标定。 */
+   2026-11-20：已切到 EKF（见下方 FILTER_MODE）。
+   离线仿真（26 fps、角度噪声 0.5 度、真值峰值 30 度/秒）：
+   RAW_RATE 稳态噪声 11.3 度/秒、峰值虚高 51%；EKF 噪声 1.3、峰值误差 2%。
+   Q/R/GATE 这三个值就是按 11.19 两批数据标的。 */
 #define DART_VISION_EKF_PROCESS_NOISE          2.0f                 /* 过程噪声强度 */
 #define DART_VISION_EKF_MEAS_NOISE_PX         25.0f                 /* 测量噪声方差（像素平方） */
 #define DART_VISION_EKF_GATE_PX               40.0f                 /* 创新量限幅门限（像素） */
@@ -221,7 +224,7 @@ extern "C" {
 #define DART_VISION_FILTER_EKF                  0U
 #define DART_VISION_FILTER_RAW_RATE             1U
 #ifndef DART_VISION_FILTER_MODE
-#define DART_VISION_FILTER_MODE                 DART_VISION_FILTER_RAW_RATE
+#define DART_VISION_FILTER_MODE                 DART_VISION_FILTER_EKF
 #endif
 /* 视线角速率低通时间常数（秒）。2026-11-19 由 0.055 降到 0.015。
    0.055 在 20 fps 下等效滞后 80~150 毫秒，使 pn_omega 的相位落在机体转动之后：
@@ -267,7 +270,7 @@ extern "C" {
 #define DART_LAUNCH_CONFIRM_COUNT                5U                  /* 连续超过阈值次数确认起飞 */
 
 /* ------------------------------ 上升段 ---------------------------------- */
-#define DART_ASCENT_PITCH_TARGET_DEG          (35.0f)               /* 阶段1/2 分界角：pitch 跌破此值转入阶段2 */
+#define DART_ASCENT_PITCH_TARGET_DEG          (23.0f)               /* 阶段1/2 分界角：pitch 跌破此值转入阶段2 */
 /* 阶段1：pitch 尚未低于目标角时输出固定抬升量，抵消发射低头。
    阶段2：角度低于目标后按 LIFT_PID / LIFT_BANG 各自的策略回目标角。
    阶段3：到达目标或进入下降段即停止补偿。 */
@@ -474,7 +477,7 @@ extern "C" {
    3) 加速度计 MotionAccel_b 在下降段只有 1.5~2.1 米/秒^2（协调转弯应 6~13），
       加速度内环等于用不可靠信号做反馈。
    代码与参数全部保留，改回 1 或 2 即可重新启用，但启用前必须先解决上面三条。 */
-#define DART_YAW_PN_MODE                         0
+#define DART_YAW_PN_MODE                         2
 #define DART_PN_N                                3.0f   /* 比例导引系数，2~5 */
 /* PN 方向符号：+1 = 视线角速率与 yaw 指令同号。台架上「目标向左移动时
    yaw_u 应为负（左转）」若相反，把这个改成 -1.0f 即可，不用改公式。 */
@@ -505,7 +508,7 @@ extern "C" {
    依据：出射航向由 yaw 自稳保持，没有侧向力时机头贴着速度矢量，可当作
    速度矢量方向的代理；两者之差就是「还需要转过多少」。
    GAIN = 0 时行为与纯 PID 完全一致。 */
-#define DART_YAW_AOA_GAIN                       0.5f   /* 无量纲，0=关闭；1.0 表示 1:1 转成角度偏置 */
+#define DART_YAW_AOA_GAIN                       0.6f   /* 无量纲，0=关闭；1.0 表示 1:1 转成角度偏置 */
 #define DART_YAW_AOA_MAX_DEG                   10.0f   /* 攻角增益限幅（度），也是总指令放宽的量 */
 
 /* ---------------------- 纯 PN（MODE 3）----------------------------------
