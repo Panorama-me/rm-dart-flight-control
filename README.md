@@ -161,14 +161,14 @@ flags：bit0 视觉链路有效、bit1 目标有效、bit2 IMU 就绪、bit3 握
 | 最大 dt | 20 ms | `DART_MAX_CONTROL_DT_MS` |
 | 起飞加速度阈值 | 22.0 m/s²，连续 5 周期 | `DART_LAUNCH_ACCEL_THRESHOLD` |
 | 起飞姿态采样 | 5 帧，yaw 圆均值 | `DART_LAUNCH_ATTITUDE_SAMPLE_COUNT` |
-| 上升 pitch 目标 | +30°（映射后角度） | `DART_ASCENT_PITCH_TARGET_DEG` |
-| 上升 pitch 策略 | LIFT_PID：硬抬升到 23° → 角度+速率串级拉回 23° 即锁存（速率环 KD=2.0） | `DART_ASCENT_PITCH_*` |
+| 上升 pitch 目标 | +35°（映射后角度） | `DART_ASCENT_PITCH_TARGET_DEG` |
+| 上升 pitch 策略 | LIFT_BANG：固定抬升 100 us 到 35°，阶段2 抬头量 `PULL_US` 当前 **0**（不主动抬头），到 23° 归零 | `DART_ASCENT_PITCH_*` |
 | 下降判据 | 映射后 pitch < 5°，连续 25 周期，且已上升 300 ms | `DART_DESCENT_PITCH_THRESHOLD_DEG` |
 | 前视时间 / 前视限幅 / 总指令 | 0.20 s / ±3.0° / **±15.0°**（pitch 单独限 **±10.0°**） | `DART_LEAD_TIME_S`、`DART_LEAD_MAX_DEG`、`DART_LEAD_COMMAND_LIMIT_DEG`、`DART_PITCH_COMMAND_LIMIT_DEG` |
-| 视线角速率 / 指令限幅 | ±15 °/s、**±15°**（死区 1.0 °/s、低通 55 ms） | `DART_LOS_RATE_LIMIT_DEG_S`、`DART_LEAD_COMMAND_LIMIT_DEG` |
+| 视线角速率 / 指令限幅 | ±15 °/s、**±15°**（死区 1.0 °/s、低通 **15 ms**） | `DART_LOS_RATE_LIMIT_DEG_S`、`DART_LEAD_COMMAND_LIMIT_DEG` |
 | 自稳 PID | yaw 20/0/**2.5**，pitch **10**/0/2.5，roll 10/**8.0**/1.0 | `DART_*_STAB_*` |
-| 视觉 PID | yaw **12**/**25**/**3.0**（积分分离 10/10），pitch 20/0/3.0 | `DART_*_VISION_*`、`DART_YAW_VISION_CHANGING_*` |
-| yaw 制导 | PN 三选一：**模式 1 速率型 PN**（`u=6·(3ω−gz)`）/ **模式 2 PN+加速度内环**（`a_cmd=3×22×ω`，`u=14(a_cmd−a_meas)−1·gz`）/ 0 回退 PID | `DART_YAW_PN_MODE`、`DART_PN_*`、`DART_ACCEL_*` |
+| 视觉 PID | yaw **14**/**25**/**3.0**（积分分离 10/10），pitch 20/0/3.0 | `DART_*_VISION_*`、`DART_YAW_VISION_CHANGING_*` |
+| yaw 制导 | PN 三选一，当前 **模式 2 PN+加速度内环**（`a_cmd=3×22×ω`，`u=4(a_cmd−a_meas)−1·gz`）/ 模式 1 速率型 PN（`u=6·(3ω−gz)`）/ 0 回退 PID | `DART_YAW_PN_MODE`、`DART_PN_*`、`DART_ACCEL_*` |
 | 舵机 | PWM 200 Hz，中位 1550 µs，行程 550–2550 µs，步进 30 µs/控制周期 | `DART_SERVO_*` |
 | 图像 | QVGA 320×240；读出窗口 **1280×960**（11.15 起 ioctl 生效），视场 **36.9°×28.1°**；焦距 **480/480** | `DART_IMAGE_*`、`DART_CAMERA_FOCAL_*_PX` |
 | 视觉链路 / 目标保持 | 250 ms / 120 ms，500 ms 复位 EKF | `DART_VISION_LINK_TIMEOUT_MS` 等 |

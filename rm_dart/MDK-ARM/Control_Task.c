@@ -480,7 +480,9 @@ static void vision_raw_rate_update(DartVisionAxisEkf_t *state,
     }
     else
     {
-        state->rate = 0.0f;
+        /* 首帧或帧间隔异常：没有可信的速率增量，按衰减处理，不硬清零。
+           首帧时 rate 本来就是 0，这条分支只在帧间隔越界时起作用。 */
+        state->rate *= DART_VISION_RATE_LOST_DECAY;
     }
 
     state->angle = measured_angle;
@@ -620,8 +622,17 @@ static void update_vision_filter(float dt, uint32_t now_ms)
             if (DartControl.telemetry.vision.lost_frames < 255U)
                 DartControl.telemetry.vision.lost_frames++;
 #if DART_VISION_FILTER_MODE == DART_VISION_FILTER_RAW_RATE
-            DartControl.vision_x_ekf.rate = 0.0f;
-            DartControl.vision_y_ekf.rate = 0.0f;
+            /* 丢帧不清零（2026-11-19）：清零是阶跃，PN 的速率指令会跟着跳一半，
+               而丢一帧并不代表视线角速率真的变成 0。改为逐帧衰减，
+               让陈旧速率自然淡出，同时不砍出阶跃。 */
+            DartControl.vision_x_ekf.rate *= DART_VISION_RATE_LOST_DECAY;
+            DartControl.vision_y_ekf.rate *= DART_VISION_RATE_LOST_DECAY;
+            if (fabsf(DartControl.vision_x_ekf.rate) <
+                (DART_VISION_RATE_LOST_FLOOR_DEG_S * DART_DEG_TO_RAD))
+                DartControl.vision_x_ekf.rate = 0.0f;
+            if (fabsf(DartControl.vision_y_ekf.rate) <
+                (DART_VISION_RATE_LOST_FLOOR_DEG_S * DART_DEG_TO_RAD))
+                DartControl.vision_y_ekf.rate = 0.0f;
 #endif
         }
     }
