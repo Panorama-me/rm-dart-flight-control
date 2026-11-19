@@ -1261,6 +1261,9 @@ static void run_descent_guidance(const INS_t *ins)
         dbg_a_meas = a_meas;
         dbg_a_cmd = a_cmd;
 #else
+        /* MODE 0：角度 PID 直接吃陀螺角速率做 D 项，不走 yaw_rate_now。
+           显式引用一次，避免切回 PID 后该变量被报「赋值但未使用」。 */
+        (void)yaw_rate_now;
         yaw_u = calculate_axis_pid(&DartControl.yaw_vision_pid, yaw_command,
                                    DART_INS_YAW_RATE_RAD_S(ins));
 #endif
