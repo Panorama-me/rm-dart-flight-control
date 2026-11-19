@@ -230,12 +230,18 @@ async function connectCam() {
     });
     vid.srcObject = stream;
     await vid.play();
+    for (let i = 0; i < 20 && !vid.videoWidth; i++) {
+      await new Promise(r => setTimeout(r, 50));
+    }
     live = true;
     document.getElementById('btnGrab').disabled = false;
     document.getElementById('btnLive').disabled = true;
+    const vw = vid.videoWidth, vh = vid.videoHeight;
+    const odd = Math.abs(vw / vh - 4 / 3) > 0.05;
     document.getElementById('status').textContent =
-      '相机已连接（' + vid.videoWidth + 'x' + vid.videoHeight +
-      '）。对准目标后点「采样当前帧」。';
+      '相机已连接（' + vw + 'x' + vh + '）。' +
+      (odd ? '比例不是 4:3，画面按中心裁剪到 320x240。' : '') +
+      '对准目标后点「采样当前帧」。';
     loop();
   } catch (e) {
     alert('连接失败：' + e.message +
@@ -251,9 +257,22 @@ function stopCam() {
   document.getElementById('btnLive').disabled = true;
 }
 
+function drawVideoFrame() {
+  const vw = vid.videoWidth, vh = vid.videoHeight;
+  if (!vw || !vh) return;
+  const target = 4 / 3;
+  let sx = 0, sy = 0, sw = vw, sh = vh;
+  if (vw / vh > target) {
+    sw = vh * target; sx = (vw - sw) / 2;
+  } else if (vw / vh < target) {
+    sh = vw / target; sy = (vh - sh) / 2;
+  }
+  ctx.drawImage(vid, sx, sy, sw, sh, 0, 0, IMG_W, IMG_H);
+}
+
 function loop() {
   if (!live) return;
-  if (vid.readyState >= 2) ctx.drawImage(vid, 0, 0, IMG_W, IMG_H);
+  if (vid.readyState >= 2) drawVideoFrame();
   rafId = requestAnimationFrame(loop);
 }
 
