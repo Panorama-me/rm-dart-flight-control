@@ -122,7 +122,9 @@ for p in ['rm_dart/MDK-ARM/Control_Task.c','rm_dart/MDK-ARM/USER/TASK/Inc/ctl_ta
 
 ### 3.2 先反推数据，再改参数
 
-`内录/` 下有 11.10 / 11.11 / 11.12 三批飞行数据（`telem_*.csv` + `rec_*.mjpeg`）。
+`rm_dart_test/内录/` 下有 11.10 / 11.11 / 11.12 三批飞行数据（`telem_*.csv` + `rec_*.mjpeg`）。
+注意它**在仓库外面**（仓库是 `rm_dart_test/rm_dart/`），相对路径 `内录/xxx` 从仓库根走不通，
+脚本里用绝对路径或 `../内录/xxx`。
 改参数前先用数据验证旧值，别凭直觉。
 
 **舵机三通道反解公式**（X 尾翼 `mixed = ±p ±y +r`，`s*_deg` 为相对中位角，0.09 °/us）：
@@ -220,7 +222,7 @@ tools/mjpeg_player.py         MJPEG 拆帧 + 可调播放器
 tools/bench_encode.py         录像存储方案耗时实测（OpenMV 上跑）
 tests/                        主机单元测试
 docs/技术手册.md              完整技术手册（改代码要同步）
-内录/                         飞行数据，不入库
+../内录/                      飞行数据，不入库（在仓库外：rm_dart_test/内录/）
 ```
 
 ---

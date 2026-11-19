@@ -14,7 +14,9 @@
 
 import argparse
 import csv
+import glob
 import math
+import os
 import sys
 
 
@@ -46,7 +48,24 @@ def main():
     ap.add_argument('--dump', help='把参与拟合的点导出到 CSV，便于画图')
     args = ap.parse_args()
 
-    rows = list(csv.DictReader(open(args.csv_path, encoding='utf-8', errors='replace')))
+    path = args.csv_path
+    if os.path.isdir(path):
+        cands = sorted(glob.glob(os.path.join(path, 'telem_*.csv')))
+        if not cands:
+            sys.exit('目录里没有 telem_*.csv：%s' % path)
+        path = cands[-1]
+        print('使用目录里最新的一份：%s' % os.path.basename(path))
+    if not os.path.exists(path):
+        sys.exit('找不到文件：%s\n'
+                 '两点提示：\n'
+                 '  1) 内录数据在仓库外面：rm_dart_test/内录/日期/telem_xxxxx.csv\n'
+                 '  2) 中文路径用引号包住、给绝对路径最稳，例如：\n'
+                 '     python tools/fit_focal_csv.py '
+                 '"D:/Study/rmElectric/rm_dart_test/内录/11.19/telem_00012.csv"\n'
+                 '  3) 也可以直接把整个目录传进来，自动取里面最新的一份\n'
+                 % path)
+
+    rows = list(csv.DictReader(open(path, encoding='utf-8', errors='replace')))
     if not rows:
         sys.exit('空文件')
     if 'vis_dx' not in rows[0]:

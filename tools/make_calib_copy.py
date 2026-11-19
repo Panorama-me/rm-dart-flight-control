@@ -36,10 +36,12 @@ HEADER = '''# ==================================================================
 #       再用 tools/fit_focal_csv.py 回归出焦距（f = -d(dx)/d(yaw) * 57.3）。
 #
 # 台架流程：
+#   0. OpenMV 必须插 SD 卡。没有卡时 record_dir 为 None，遥测 CSV 根本不会生成。
 #   1. STM32 烧正常固件，DART_MODE = DEBUG（只算不发舵，遥测照发）
 #   2. 本文件在 OpenMV 上运行
 #   3. 目标灯固定，机体绕竖轴左右各转 20 度以上，转 3~5 个来回
 #   4. 停录，把 telem_XXXXX.csv 拷到电脑，跑 tools/fit_focal_csv.py
+#      注意内录数据在仓库外面（rm_dart_test/内录/...），用绝对路径最稳
 # =============================================================================
 
 '''
@@ -81,6 +83,8 @@ REPLACES = [
 
 
 def main():
+    if not os.path.exists(SRC):
+        sys.exit('找不到 main.py：%s\n本脚本必须放在仓库的 tools/ 目录下运行。' % SRC)
     src = open(SRC, 'rb').read().decode('utf-8')
     out = src
     for old, new, desc in REPLACES:
