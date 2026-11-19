@@ -88,6 +88,10 @@ def analyze(path, quiet=False):
         return None
 
     sign = sum(1 for a, b in zip(wv, wt) if a * b > 0) / len(wv)
+    # 大幅帧的符号一致率才是 PN 真正依赖的：小信号帧符号本身随机，
+    # 但那些帧上 PN 输出也接近 0，打反了没有实际危害。
+    big = [(a, b) for a, b in zip(wt, wv) if abs(a) >= 10.0]
+    big_sign = (sum(1 for a, b in big if a * b > 0) / len(big)) if len(big) >= 4 else float('nan')
     rmse = math.sqrt(sum((a - b) ** 2 for a, b in zip(wv, wt)) / len(wv))
     jit = [abs(b - a) for a, b in zip(w, w[1:])]
     jit.sort()
@@ -96,12 +100,14 @@ def analyze(path, quiet=False):
     pk_w = max(abs(x) for x in wv)
     pk_t = max(abs(x) for x in wt)
 
-    r = dict(name=os.path.basename(path)[6:-4], n=len(wv), sign=sign, rmse=rmse,
+    r = dict(name=os.path.basename(path)[6:-4], n=len(wv), sign=sign,
+             big_sign=big_sign, nbig=len(big), rmse=rmse,
              jit=p95, pc=pc, pk_ratio=pk_w / pk_t if pk_t > 1 else float('nan'))
     if not quiet:
-        print('%-6s n=%2d  符号一致 %5.0f%%  RMSE %5.1f  抖动p95 %5.1f  '
-              '偏相关 %+.2f  峰值比 %.2f'
-              % (r['name'], r['n'], 100 * sign, rmse, p95, pc, r['pk_ratio']))
+        bs = '%.0f%%' % (100 * big_sign) if big_sign == big_sign else '  -- '
+        print('%-6s n=%2d  大幅%2d帧 大幅符号 %5s  全部 %3.0f%%  RMSE %5.1f  '
+              '抖动 %5.1f  偏相关 %+.2f'
+              % (r['name'], r['n'], len(big), bs, 100 * sign, rmse, p95, pc))
     return r
 
 
@@ -109,19 +115,21 @@ def verdict(rs):
     if not rs:
         print('没有可用数据。')
         return
-    sign = sum(r['sign'] for r in rs) / len(rs)
+    big = [r['big_sign'] for r in rs if r['big_sign'] == r['big_sign']]
+    sign = sum(big) / len(big) if big else float('nan')
     rmse = sum(r['rmse'] for r in rs) / len(rs)
     jit = sum(r['jit'] for r in rs) / len(rs)
     pc = sum(abs(r['pc']) for r in rs if r['pc'] == r['pc']) / max(
         1, sum(1 for r in rs if r['pc'] == r['pc']))
     print()
     print('=== 汇总（%d 发）===' % len(rs))
-    print('  符号一致率  %5.0f%%   （判据 > 85%%）' % (100 * sign))
+    print('  大幅帧符号一致  %5.0f%%   （判据 > 85%%，只看 |ω|≥10 °/s 的帧）'
+          % (100 * sign if sign == sign else float('nan')))
     print('  RMSE        %5.1f °/s（判据 < 5）' % rmse)
     print('  抖动 p95    %5.1f °/s（判据 < 5）' % jit)
     print('  |偏相关|    %5.2f     （判据 < 0.5，越低越说明没被机体转动主导）' % pc)
     ok = 0
-    ok += 1 if sign > 0.85 else 0
+    ok += 1 if (sign == sign and sign > 0.85) else 0
     ok += 1 if rmse < 5 else 0
     ok += 1 if jit < 5 else 0
     ok += 1 if pc < 0.5 else 0
