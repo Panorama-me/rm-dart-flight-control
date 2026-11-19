@@ -71,6 +71,10 @@
       <button onclick="stopCam()">断开</button>
     </div>
     <div class="row">
+      <select id="camSel" style="max-width:340px"></select>
+      <button onclick="refreshCams()">刷新设备</button>
+    </div>
+    <div class="row">
       <input type="file" id="file" accept="image/*,.mjpeg,.bin">
       <span class="muted" id="fname">未加载</span>
     </div>
@@ -220,14 +224,54 @@ async function loadMjpegFile(f) {
 }
 
 const vid = document.getElementById('vid');
+const camSel = document.getElementById('camSel');
 let stream = null, rafId = null, live = false;
 
+async function refreshCams() {
+  if (!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) return;
+  try {
+    const devs = await navigator.mediaDevices.enumerateDevices();
+    const cams = devs.filter(d => d.kind === 'videoinput');
+    const cur = camSel.value;
+    if (!cams.length) {
+      camSel.innerHTML = '<option value="">未发现摄像头</option>';
+      return;
+    }
+    camSel.innerHTML = cams.map((c, i) =>
+      '<option value="' + c.deviceId + '">' +
+      (c.label || ('摄像头 ' + (i + 1) + '（授权后显示名称）')) +
+      '</option>').join('');
+    if (cur && Array.from(camSel.options).some(o => o.value === cur)) {
+      camSel.value = cur;
+    } else {
+      const idx = cams.findIndex(c => /openmv/i.test(c.label));
+      if (idx >= 0) camSel.selectedIndex = idx;
+    }
+  } catch (e) { /* 未授权时枚举会失败，忽略 */ }
+}
+
 async function connectCam() {
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    alert('这个页面不能访问摄像头。\n\n' +
+      (location.protocol === 'file:'
+        ? '当前是用 file:// 直接打开的，浏览器禁止网页读摄像头。\n\n'
+        : '浏览器版本太旧，请用新版 Chrome / Edge。\n\n') +
+      '正确做法：在仓库根目录运行\n  python -m http.server 8000\n' +
+      '然后打开 http://localhost:8000/tools/focal_calib.html');
+    return;
+  }
+  if (location.protocol === 'file:') {
+    alert('file:// 页面不允许访问摄像头。\n\n在仓库根目录运行：\n  python -m http.server 8000\n' +
+      '然后打开 http://localhost:8000/tools/focal_calib.html');
+    return;
+  }
   try {
     if (stream) stopCam();
-    stream = await navigator.mediaDevices.getUserMedia({
-      video: { width: { ideal: 320 }, height: { ideal: 240 } }, audio: false
-    });
+    const id = camSel.value;
+    const video = id
+      ? { deviceId: { exact: id }, width: { ideal: 320 }, height: { ideal: 240 } }
+      : { width: { ideal: 320 }, height: { ideal: 240 } };
+    stream = await navigator.mediaDevices.getUserMedia({ video: video, audio: false });
     vid.srcObject = stream;
     await vid.play();
     for (let i = 0; i < 20 && !vid.videoWidth; i++) {
@@ -243,9 +287,21 @@ async function connectCam() {
       (odd ? '比例不是 4:3，画面按中心裁剪到 320x240。' : '') +
       '对准目标后点「采样当前帧」。';
     loop();
+    setTimeout(refreshCams, 300);
   } catch (e) {
-    alert('连接失败：' + e.message +
-      '\n\n检查三件事：\n1) 浏览器允许了摄像头权限\n2) OpenMV 正在运行 tools/openmv_uvc.py\n3) 系统设备里能看到 OpenMV 摄像头');
+    let msg = e.name + '：' + e.message;
+    if (e.name === 'NotAllowedError') {
+      msg = '权限被拒绝。\n1) 点地址栏左侧的摄像头图标，允许本站使用\n2) 如果本页嵌在预览面板里，改用浏览器直接打开这个地址';
+    } else if (e.name === 'NotFoundError') {
+      msg = '系统里找不到摄像头。\n1) 确认 OpenMV 正在运行 tools/openmv_uvc.py\n' +
+            '2) 设备管理器里应出现 OpenMV 摄像头\n3) 固件需 >= 4.5.0 才支持 UVC';
+    } else if (e.name === 'NotReadableError') {
+      msg = '摄像头被别的程序占着。\n最常见是 OpenMV IDE 还连着板子——\n' +
+            '把 openmv_uvc.py 存进板子设为自启，然后关掉 IDE 再连。';
+    } else if (e.name === 'OverconstrainedError') {
+      msg = '选中的设备已经不在了，点「刷新设备」重选。';
+    }
+    alert('连接失败\n\n' + msg);
   }
 }
 
@@ -385,10 +441,8 @@ function selftest() {
   document.getElementById('fname').textContent = '自检图';
   document.getElementById('status').textContent =
     '自检：质心 ' + r.cx.toFixed(1) + '（应 240），绿像素 ' + r.n + '，反推焦距 ' + f.toFixed(0) + ' px（应 480）';
-  alert((ok ? '自检通过' : '自检不正常') + '
-
-质心 cx = ' + r.cx.toFixed(1) + '（应 240）
-' +
+  alert((ok ? '自检通过' : '自检不正常') +
+        '\n\n质心 cx = ' + r.cx.toFixed(1) + '（应 240）\n' +
         '给 9.46 度反推焦距 = ' + f.toFixed(0) + ' px（应 480）');
 }
 
@@ -456,6 +510,11 @@ ctx.fillRect(0, 0, IMG_W, IMG_H);
 ctx.fillStyle = '#666';
 ctx.font = '13px sans-serif';
 ctx.fillText('加载图片后显示预览', 88, 124);
+
+refreshCams();
+if (navigator.mediaDevices && navigator.mediaDevices.addEventListener) {
+  navigator.mediaDevices.addEventListener('devicechange', refreshCams);
+}
 </script>
 </body>
 </html>
