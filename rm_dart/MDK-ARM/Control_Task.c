@@ -742,23 +742,43 @@ static float calculate_yaw_hold(const INS_t *ins)
  */
 static void update_yaw_best_lock(const INS_t *ins)
 {
-#if DART_YAW_ABS_LOCK_ENABLE
+#if DART_YAW_BEST_TRACK_ENABLE
     float los_abs;
 
     if (!DartControl.telemetry.vision.valid ||
         !DartControl.telemetry.vision.recognized)
+    {
+        DartControl.yaw_best_streak = 0U;
         return;
+    }
 
     los_abs = fabsf(DartControl.telemetry.vision.los_yaw_deg);
 
-    /* 首帧无条件记录；之后必须比历史最优再好 margin 才更新，
-       避免噪声尖峰把锁定角钉在错误位置。 */
-    if (!DartControl.yaw_best_valid ||
-        (los_abs < DartControl.yaw_best_los_deg - DART_YAW_BEST_MARGIN_DEG))
+    /* 首帧无条件记录，给后续比较一个基准。 */
+    if (!DartControl.yaw_best_valid)
     {
         DartControl.yaw_best_deg = ins->Yaw;
         DartControl.yaw_best_los_deg = los_abs;
         DartControl.yaw_best_valid = 1U;
+        DartControl.yaw_best_streak = 0U;
+        return;
+    }
+
+    /* 连续两帧都比历史最优更小才更新：单帧识别跳变可能让 |los| 假性变小，
+       连续两帧同时被骗的概率低得多。任何一帧不满足就重新计数。 */
+    if (los_abs < (DartControl.yaw_best_los_deg - DART_YAW_BEST_MARGIN_DEG))
+    {
+        DartControl.yaw_best_streak++;
+        if (DartControl.yaw_best_streak >= DART_YAW_BEST_CONFIRM_FRAMES)
+        {
+            DartControl.yaw_best_deg = ins->Yaw;
+            DartControl.yaw_best_los_deg = los_abs;
+            DartControl.yaw_best_streak = 0U;
+        }
+    }
+    else
+    {
+        DartControl.yaw_best_streak = 0U;
     }
 #else
     (void)ins;
@@ -1245,21 +1265,45 @@ static void run_descent_guidance(const INS_t *ins)
         yaw_u = DART_PN_K_RATE * (rate_cmd - yaw_rate_now);
         yaw_u = constrain_float(yaw_u,
                                 -DART_ACCEL_OUT_MAX, DART_ACCEL_OUT_MAX);
-#elif (DART_YAW_PN_MODE == DART_YAW_PN_MODE_ACCEL)
-        /* 外环 PN 给横向加速度指令，内环用加速度计闭环到力。
-           a_cmd = N * V_nom * omega，V_nom 只在这里出现。 */
-        float a_cmd = DART_PN_SIGN * DART_PN_N * DART_PN_V_NOM *
-                      (pn_omega_yaw * DART_DEG_TO_RAD);
-        float a_meas = DART_ACCEL_YAW_SIGN *
-                       ins->MotionAccel_b[DART_ACCEL_YAW_AXIS];
-        a_cmd = constrain_float(a_cmd,
-                                -DART_ACCEL_CMD_MAX, DART_ACCEL_CMD_MAX);
-        yaw_u = DART_ACCEL_K_A * (a_cmd - a_meas) -
-                DART_ACCEL_K_Q * yaw_rate_now;
-        yaw_u = constrain_float(yaw_u,
-                                -DART_ACCEL_OUT_MAX, DART_ACCEL_OUT_MAX);
-        dbg_a_meas = a_meas;
-        dbg_a_cmd = a_cmd;
+#elif (DART_YAW_PN_MODE == DART_YAW_PN_MODE_AOA)
+        /* PID + 攻角增益：偏置加在 PID 的输入角上，不是加在输出上。
+           这样稳态时 PID 会把机头拉到「目标 + 偏置」的位置，形成固定偏头；
+           如果加在输出上，它只会变成一个与误差无关的恒定舵偏。
+           符号：yaw_best - launch > 0 表示目标在出射航向的 yaw 正方向。 */
+        {
+            float aoa_deg = 0.0f;
+
+            (void)yaw_rate_now;
+            if (DartControl.yaw_best_valid)
+            {
+                float dpsi = wrap_180(DartControl.yaw_best_deg -
+                                      DartControl.telemetry.launch_yaw_deg);
+                aoa_deg = DART_YAW_AOA_GAIN * dpsi;
+                aoa_deg = constrain_float(aoa_deg,
+                                          -DART_YAW_AOA_MAX_DEG,
+                                          DART_YAW_AOA_MAX_DEG);
+            }
+            /* 叠加后允许比原引导限幅多出 AOA_MAX，但不再无限放宽。 */
+            {
+                float cmd = constrain_float(
+                    yaw_command + aoa_deg,
+                    -(DART_LEAD_COMMAND_LIMIT_DEG + DART_YAW_AOA_MAX_DEG),
+                    (DART_LEAD_COMMAND_LIMIT_DEG + DART_YAW_AOA_MAX_DEG));
+                dbg_a_cmd = aoa_deg;   /* 复用该字段上报角度偏置，单位改为度 */
+                yaw_u = calculate_axis_pid(&DartControl.yaw_vision_pid, cmd,
+                                           DART_INS_YAW_RATE_RAD_S(ins));
+            }
+        }
+#elif (DART_YAW_PN_MODE == DART_YAW_PN_MODE_PURE)
+        /* 纯 PN：直接用视线角速率给舵。陀螺阻尼项保留，防单帧识别跳变打满舵。 */
+        {
+            float pn_rate = DART_PN_SIGN * DART_PN_N * pn_omega_yaw;
+            pn_rate = constrain_float(pn_rate,
+                                      -DART_PN_RATE_MAX, DART_PN_RATE_MAX);
+            yaw_u = DART_PN_PURE_K * pn_rate - DART_PN_PURE_KD * yaw_rate_now;
+            yaw_u = constrain_float(yaw_u,
+                                    -DART_ACCEL_OUT_MAX, DART_ACCEL_OUT_MAX);
+        }
 #else
         /* MODE 0：角度 PID 直接吃陀螺角速率做 D 项，不走 yaw_rate_now。
            显式引用一次，避免切回 PID 后该变量被报「赋值但未使用」。 */
@@ -1784,18 +1828,31 @@ void control_Task(void)
             (DART_CAMERA_YAW_SIGN * DartControl.vision_x_ekf.rate +
              DART_INS_YAW_RATE_RAD_S(&ins_snapshot)) * DART_RAD_TO_DEG,
             -DART_PN_RATE_MAX, DART_PN_RATE_MAX);
-#if (DART_YAW_PN_MODE == DART_YAW_PN_MODE_ACCEL)
-        /* 台架可视化：把飞行时真正会算出的 a_cmd 与 yaw 输出复现一遍，
-           只写遥测、不驱动舵机。用来确认「目标往哪边走 → yaw_u 该往哪边打」。 */
+#if (DART_YAW_PN_MODE == DART_YAW_PN_MODE_AOA)
+        /* 台架可视化：复现攻角偏置与 PID 输出，只写遥测不驱动舵机。 */
         {
-            float a_cmd_dbg = DART_PN_SIGN * DART_PN_N * DART_PN_V_NOM *
-                              (dbg_pn_omega * DART_DEG_TO_RAD);
-            a_cmd_dbg = constrain_float(a_cmd_dbg,
-                                        -DART_ACCEL_CMD_MAX, DART_ACCEL_CMD_MAX);
-            dbg_a_cmd = a_cmd_dbg;
+            float aoa_dbg = 0.0f;
+
+            if (DartControl.yaw_best_valid)
+            {
+                float dpsi = wrap_180(DartControl.yaw_best_deg -
+                                      DartControl.telemetry.launch_yaw_deg);
+                aoa_dbg = constrain_float(DART_YAW_AOA_GAIN * dpsi,
+                                          -DART_YAW_AOA_MAX_DEG,
+                                          DART_YAW_AOA_MAX_DEG);
+            }
+            dbg_a_cmd = aoa_dbg;
             dbg_yaw_u = constrain_float(
-                DART_ACCEL_K_A * (a_cmd_dbg - dbg_a_meas) -
-                DART_ACCEL_K_Q * gz_dps_dbg,
+                DART_YAW_VISION_KP * aoa_dbg,
+                -DART_PID_MAX_OUTPUT_US, DART_PID_MAX_OUTPUT_US);
+        }
+#elif (DART_YAW_PN_MODE == DART_YAW_PN_MODE_PURE)
+        {
+            float pn_rate_dbg = DART_PN_SIGN * DART_PN_N * dbg_pn_omega;
+            pn_rate_dbg = constrain_float(pn_rate_dbg,
+                                          -DART_PN_RATE_MAX, DART_PN_RATE_MAX);
+            dbg_yaw_u = constrain_float(
+                DART_PN_PURE_K * pn_rate_dbg - DART_PN_PURE_KD * gz_dps_dbg,
                 -DART_ACCEL_OUT_MAX, DART_ACCEL_OUT_MAX);
         }
 #elif (DART_YAW_PN_MODE == DART_YAW_PN_MODE_RATE)
@@ -1940,6 +1997,7 @@ void control_Task(void)
             DartControl.descent_target_seen = 0U;
             DartControl.descent_vision_active = 0U;
             DartControl.yaw_best_valid = 0U;
+    DartControl.yaw_best_streak = 0U;
             DartControl.telemetry.vision.lost_frames = 0U;
             DartControl.yaw_best_deg = 0.0f;
             DartControl.yaw_best_los_deg = 0.0f;

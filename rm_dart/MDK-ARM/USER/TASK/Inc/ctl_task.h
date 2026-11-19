@@ -159,7 +159,7 @@ extern "C" {
 #define DART_MODE_DEBUG                       4U
 /* 编译期选择工作模式；台架调试时改成 DART_MODE_DEBUG：
    不检测起飞、不驱动舵机，只识别目标并计算/上报视觉指令。 */
-#define DART_MODE                            DART_MODE_BOTH   /* 两轴制导（正常飞行配置） */
+#define DART_MODE                            DART_MODE_DEBUG   /* 两轴制导（正常飞行配置） */
 
 #define DART_IMAGE_WIDTH_PX                  320.0f    /* OpenMV 输出=- QVGA，宽度 320 */
 #define DART_IMAGE_HEIGHT_PX                 240.0f    /* OpenMV 输出 QVGA，高度 240 */
@@ -288,6 +288,13 @@ extern "C" {
 /* 更新最佳航向需要的改进量（度）。防止噪声尖峰把锁定角钉在错误位置：
    只有 |视线角| 比历史最优值再小 0.15 度才更新。 */
 #define DART_YAW_BEST_MARGIN_DEG                0.15f
+/* 最佳航向跟踪开关，独立于 DART_YAW_ABS_LOCK_ENABLE：
+   后者只管「脱锁后是否按最佳航向保持」，本开关只管「是否记录最佳航向」。
+   拆开是为了让攻角增益能用到 best 角，又不改变脱锁行为。 */
+#ifndef DART_YAW_BEST_TRACK_ENABLE
+#define DART_YAW_BEST_TRACK_ENABLE               1U
+#endif
+#define DART_YAW_BEST_CONFIRM_FRAMES             2U   /* 连续两帧都比历史最优更小才更新，防单帧识别跳变 */
 /* 脱锁判据：连续丢失的视觉帧数达到此值即切脱锁锁定，不再等
    DART_TARGET_LOST_HOLD_MS 的 120 ms 超时。按 26 fps 算：
    2 帧 ≈ 77 ms；调成 1 则丢一帧就切（约 38 ms）。+
@@ -456,7 +463,8 @@ extern "C" {
    先做台架符号确认（DART_ACCEL_YAW_SIGN / AXIS），确认前建议 1。 */
 #define DART_YAW_PN_MODE_OFF                     0
 #define DART_YAW_PN_MODE_RATE                    1
-#define DART_YAW_PN_MODE_ACCEL                   2
+#define DART_YAW_PN_MODE_AOA                     2   /* PID + 攻角增益（2026-11-19 替换原加速度内环） */
+#define DART_YAW_PN_MODE_PURE                    3   /* 纯 PN：K*N*omega - Kd*gz，不依赖加速度计 */
 /* 2026-11-19 决定：回到 0（角度 PID），暂停 PN 两条路线。
    依据（11.19 十发数据）：
    1) 7.6% 的视觉帧是识别框跳变，单帧视线角速率可被伪造成 100~540 度/秒，
@@ -467,7 +475,6 @@ extern "C" {
       加速度内环等于用不可靠信号做反馈。
    代码与参数全部保留，改回 1 或 2 即可重新启用，但启用前必须先解决上面三条。 */
 #define DART_YAW_PN_MODE                         0
-
 #define DART_PN_N                                3.0f   /* 比例导引系数，2~5 */
 /* PN 方向符号：+1 = 视线角速率与 yaw 指令同号。台架上「目标向左移动时
    yaw_u 应为负（左转）」若相反，把这个改成 -1.0f 即可，不用改公式。 */
@@ -490,6 +497,22 @@ extern "C" {
    再大只是把内环顶成继电器，输出在正负限幅之间来回跳。 */
 #define DART_ACCEL_CMD_MAX                     20.0f
 #define DART_ACCEL_OUT_MAX                     250.0f   /* 加速度环输出限幅（微秒），首飞保守 */
+
+/* ---------------------- yaw 攻角增益（MODE 2）----------------------------
+   把「目标最居中时的机头角 - 出射航向」按比例变成角度偏置，直接叠加到
+   PID 的输入角（yaw_command）上，不是加在输出上。稳态时机头会停在偏离
+   画面中心 lead 度的位置：lead = GAIN * (yaw_best - launch)，限幅 ±MAX。
+   依据：出射航向由 yaw 自稳保持，没有侧向力时机头贴着速度矢量，可当作
+   速度矢量方向的代理；两者之差就是「还需要转过多少」。
+   GAIN = 0 时行为与纯 PID 完全一致。 */
+#define DART_YAW_AOA_GAIN                       0.5f   /* 无量纲，0=关闭；1.0 表示 1:1 转成角度偏置 */
+#define DART_YAW_AOA_MAX_DEG                   10.0f   /* 攻角增益限幅（度），也是总指令放宽的量 */
+
+/* ---------------------- 纯 PN（MODE 3）----------------------------------
+   直接用视线角速率给舵，另加陀螺阻尼。阻尼不能省：omega 来自 26 fps 帧间
+   差分，11.19 数据里 7.6% 的帧是识别跳变，无阻尼时一帧跳变就是一个满舵脉冲。 */
+#define DART_PN_PURE_K                          6.0f   /* 微秒 / (度/秒)，与 K_RATE 同量级 */
+#define DART_PN_PURE_KD                         2.0f   /* 陀螺阻尼，微秒 / (度/秒) */
 #define DART_PITCH_VISION_KP                     20.0f
 #define DART_PITCH_VISION_KI                     0.00f
 #define DART_PITCH_VISION_KD                     3.00f
@@ -721,6 +744,7 @@ typedef struct
     float yaw_best_deg;                     /* 目标最居中时的机体航向（度） */
     float yaw_best_los_deg;                 /* 上述时刻的 |视线偏航角|（度） */
     uint8_t yaw_best_valid;                 /* 已记录到最佳航向 */
+    uint8_t yaw_best_streak;                /* 连续「更居中」的帧数，防单帧识别跳变 */
 } DartControlRuntime_t;
 
 /* 全局运行时数据实例 */
