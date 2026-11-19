@@ -458,6 +458,7 @@ def poll_telemetry():
         telem_servo[3] = s16(telem_buf[b + T_SERVO4_H],
                              telem_buf[b + T_SERVO4_L]) / TELEM_SERVO_SCALE
         telem_dbg_flags = telem_buf[b + T_DBG_FLAGS_INDEX]
+        # 2026-11-19 起这两个槽位改报：dpsi（best-launch，度）与攻角偏置（度）。
         telem_a_meas = s16(telem_buf[b + T_A_MEAS_H],
                            telem_buf[b + T_A_MEAS_L]) / TELEM_ACCEL_SCALE
         telem_a_cmd = s16(telem_buf[b + T_A_CMD_H],
@@ -657,7 +658,7 @@ def append_telemetry_log(now_ms, frame_number):
                          "pitch_deg,yaw_deg,roll_deg,out_pitch_deg,"
                          "out_yaw_deg,out_roll_deg,los_yaw_deg,los_pitch_deg,"
                          "s1_deg,s2_deg,s3_deg,s4_deg,"
-                         "a_meas_ms2,a_cmd_ms2,pn_omega_dps,yaw_u_us\n")
+                         "yaw_best_rel_deg,a_cmd_ms2,aoa_gain_deg,yaw_u_us\n")
         except Exception as e:
             if stream is not None:
                 try:

@@ -1508,9 +1508,23 @@ void attitude_telemetry_send(void)
     output_yaw_deg = DartControl.telemetry.output_yaw_deg;
     output_roll_deg = DartControl.telemetry.output_roll_deg;
     output_valid = DartControl.telemetry.output_valid;
-    a_meas_snap = dbg_a_meas;
+    /* 2026-11-19：这两个槽位改报攻角增益相关量（帧长与索引不变，语义变了）。
+         A_MEAS 槽 -> dpsi = 目标最居中时的机头角 - 出射航向（度，+-180）
+         PN_OMEGA 槽 -> 限幅后的攻角偏置（度，+-10）
+       加速度计在下降段本就不可用、PN 角速率在 MODE 2 下也用不上，
+       换成这两个现场能直接判读的量。 */
+    (void)dbg_pn_omega;   /* MODE 0/2 不再上报它，显式引用避免“只写不读”告警 */
+    a_meas_snap = 0.0f;
+    pn_omega_snap = 0.0f;
+    if (DartControl.yaw_best_valid)
+    {
+        a_meas_snap = wrap_180(DartControl.yaw_best_deg -
+                               DartControl.telemetry.launch_yaw_deg);
+        pn_omega_snap = constrain_float(DART_YAW_AOA_GAIN * a_meas_snap,
+                                        -DART_YAW_AOA_MAX_DEG,
+                                        DART_YAW_AOA_MAX_DEG);
+    }
     a_cmd_snap = dbg_a_cmd;
-    pn_omega_snap = dbg_pn_omega;
     yaw_u_snap = dbg_yaw_u;
     if (primask == 0U)
         __enable_irq();
@@ -1593,7 +1607,8 @@ void attitude_telemetry_send(void)
     tx_frame[DART_ATT_SERVO4_L_INDEX] = (uint8_t)servo_raw[3];
     tx_frame[DART_ATT_DBG_FLAGS_INDEX] = dbg_flags;
 
-    /* yaw 制导调试量：加速度环的反馈/指令、PN 角速率、yaw 输出。 */
+    /* yaw 制导调试量。前两槽自 2026-11-19 起改为：
+       A_MEAS -> dpsi（度），PN_OMEGA -> 攻角偏置（度）；A_CMD 在 MODE 2 下也是度。 */
     a_meas_raw = (int16_t)(a_meas_snap * DART_ATT_ACCEL_SCALE);
     a_cmd_raw = (int16_t)(a_cmd_snap * DART_ATT_ACCEL_SCALE);
     pn_omega_raw = (int16_t)(pn_omega_snap * DART_ATT_RATE_SCALE);
