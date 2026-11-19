@@ -85,11 +85,11 @@ TEMPLATE = """<!DOCTYPE html>
 <body>
 <h1>下降段：yaw / out_yaw 与角速率</h1>
 <p class="sub">左轴为角度（度），右轴为角速率（度/秒）。<b>yaw 是实际航向，out_yaw 已由「相对机身的指令」换算为绝对方位</b>，两者之差即控制误差加前视项。<br>
-gy 是俯仰轴角速率（按要求一并画出），gz 才是与 yaw 同轴的那一路，用灰色虚线作参照。</p>
+角速率画的是 <b>__R__</b>（__RLABEL__），与 yaw 同轴。</p>
 <div id="panels"></div>
 <script>
 const DATA = __DATA__;
-const COL = { yaw:'#378ADD', out:'#D85A30', gy:'#1D9E75', gz:'#888780' };
+const COL = { yaw:'#378ADD', out:'#D85A30', rate:'#1D9E75' };
 const panels = document.getElementById('panels');
 DATA.forEach(function (d, i) {
   const box = document.createElement('div');
@@ -99,8 +99,7 @@ DATA.forEach(function (d, i) {
     '<div class="lg">' +
       '<span><i class="sw" style="border-top-color:' + COL.yaw + '"></i>yaw 实际</span>' +
       '<span><i class="sw" style="border-top-color:' + COL.out + '"></i>out_yaw 指令</span>' +
-      '<span><i class="sw" style="border-top-color:' + COL.gy + '"></i>gy 俯仰角速率</span>' +
-      '<span><i class="sw" style="border-top-color:' + COL.gz + ';border-top-style:dashed"></i>gz 偏航角速率（参照）</span>' +
+      '<span><i class="sw" style="border-top-color:' + COL.rate + '"></i>__R__ __RLABEL__</span>' +
     '</div><div class="wrap"><canvas id="c' + i + '"></canvas></div>';
   panels.appendChild(box);
 
@@ -113,10 +112,8 @@ DATA.forEach(function (d, i) {
           pointRadius:0, tension:0.15, yAxisID:'y' },
         { label:'out_yaw', data:d.out, borderColor:COL.out, borderWidth:2,
           pointRadius:0, tension:0.15, yAxisID:'y' },
-        { label:'gy', data:d.gy, borderColor:COL.gy, borderWidth:1.5,
-          pointRadius:0, tension:0.1, yAxisID:'y1' },
-        { label:'gz', data:d.gz, borderColor:COL.gz, borderWidth:1.2,
-          borderDash:[4,4], pointRadius:0, tension:0.1, yAxisID:'y1' }
+        { label:'__R__', data:d.__R__, borderColor:COL.rate, borderWidth:1.6,
+          pointRadius:0, tension:0.1, yAxisID:'y1' }
       ]
     },
     options: {
@@ -149,6 +146,8 @@ def main():
     ap.add_argument('--shots', help='逗号分隔的发次，如 00031,00030')
     ap.add_argument('--n', type=int, default=3, help='不指定 --shots 时画几发')
     ap.add_argument('--out', default='')
+    ap.add_argument('--rate', choices=['gz', 'gy'], default='gz',
+                    help='角速率画哪一路，默认 gz（与 yaw 同轴）')
     args = ap.parse_args()
 
     files = sorted(glob.glob(os.path.join(args.dir, 'telem_*.csv')))
@@ -171,15 +170,18 @@ def main():
 
     out = args.out or os.path.join(args.dir, 'attitude_plot.html')
     html = TEMPLATE.replace('__DATA__', json.dumps(data, ensure_ascii=False))
+    rlabel = '偏航角速率，与 yaw 同轴' if args.rate == 'gz' else '俯仰角速率，与 yaw 不同轴'
+    html = html.replace('__RLABEL__', rlabel).replace('__R__', args.rate)
     open(out, 'w', encoding='utf-8', newline='').write(html)
-    print('已生成 %s' % out)
+    print('已生成 %s（角速率 = %s）' % (out, args.rate))
     for d in data:
         ov = [v for v in d['out'] if v is not None]
-        print('  %s  %d 帧  视觉有效 %.0f%%  yaw %.1f~%.1f  out_abs %.1f~%.1f  gy %.0f~%.0f' %
+        rv = d[args.rate]
+        print('  %s  %d 帧  视觉有效 %.0f%%  yaw %.1f~%.1f  out_abs %.1f~%.1f  %s %.0f~%.0f' %
               (d['name'], d['n'], d['score'],
                min(d['yaw']), max(d['yaw']),
                min(ov) if ov else float('nan'), max(ov) if ov else float('nan'),
-               min(d['gy']), max(d['gy'])))
+               args.rate, min(rv), max(rv)))
 
 
 if __name__ == '__main__':
