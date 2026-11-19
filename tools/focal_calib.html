@@ -22,6 +22,7 @@
     width: 100%; max-width: 640px; aspect-ratio: 4 / 3; display: block;
     background: #111; border-radius: 6px; image-rendering: pixelated;
   }
+  #vid { display: none; }
   .row { display: flex; gap: 8px; align-items: center; margin: 8px 0; flex-wrap: wrap; }
   .row label { color: #55544f; font-size: 13px; }
   input[type=number], input[type=text] {
@@ -57,17 +58,25 @@
 <div class="sub">
   目标是一盏绿灯。量两个数（距离 L、横移 W），加载两张图，点「加入样本」，最后「计算焦距」。<br>
   识别阈值与 main.py 一致：<code>L 9~100, A -102~-25, B 0~127</code>。<br>
-  角度符号：目标在画面<b>右侧</b>填正、<b>左侧</b>填负（与 los_yaw 反号，标定只看幅值）。
+  角度符号：目标在画面<b>右侧</b>填正、<b>左侧</b>填负（与 los_yaw 反号，标定只看幅值）。<br>
+  实时标定：OpenMV 先运行 <code>tools/openmv_uvc.py</code>，再点「连接相机」。
 </div>
 
 <div class="wrap">
   <div class="card left">
     <div class="row">
+      <button class="primary" onclick="connectCam()">连接相机</button>
+      <button onclick="grab()" id="btnGrab" disabled>采样当前帧</button>
+      <button onclick="resumeLive()" id="btnLive" disabled>继续预览</button>
+      <button onclick="stopCam()">断开</button>
+    </div>
+    <div class="row">
       <input type="file" id="file" accept="image/*,.mjpeg,.bin">
       <span class="muted" id="fname">未加载</span>
     </div>
+    <video id="vid" autoplay playsinline muted></video>
     <canvas id="cv" width="320" height="240"></canvas>
-    <div class="status" id="status">等待图片</div>
+    <div class="status" id="status">等待连接相机或加载图片</div>
   </div>
 
   <div class="card right">
@@ -208,6 +217,83 @@ async function loadMjpegFile(f) {
   const img = new Image();
   img.onload = () => { renderLoaded(img, f.name + ' #' + idx); URL.revokeObjectURL(url); };
   img.src = url;
+}
+
+const vid = document.getElementById('vid');
+let stream = null, rafId = null, live = false;
+
+async function connectCam() {
+  try {
+    if (stream) stopCam();
+    stream = await navigator.mediaDevices.getUserMedia({
+      video: { width: { ideal: 320 }, height: { ideal: 240 } }, audio: false
+    });
+    vid.srcObject = stream;
+    await vid.play();
+    live = true;
+    document.getElementById('btnGrab').disabled = false;
+    document.getElementById('btnLive').disabled = true;
+    document.getElementById('status').textContent =
+      '相机已连接（' + vid.videoWidth + 'x' + vid.videoHeight +
+      '）。对准目标后点「采样当前帧」。';
+    loop();
+  } catch (e) {
+    alert('连接失败：' + e.message +
+      '\n\n检查三件事：\n1) 浏览器允许了摄像头权限\n2) OpenMV 正在运行 tools/openmv_uvc.py\n3) 系统设备里能看到 OpenMV 摄像头');
+  }
+}
+
+function stopCam() {
+  if (rafId) { cancelAnimationFrame(rafId); rafId = null; }
+  if (stream) { stream.getTracks().forEach(t => t.stop()); stream = null; }
+  live = false;
+  document.getElementById('btnGrab').disabled = true;
+  document.getElementById('btnLive').disabled = true;
+}
+
+function loop() {
+  if (!live) return;
+  if (vid.readyState >= 2) ctx.drawImage(vid, 0, 0, IMG_W, IMG_H);
+  rafId = requestAnimationFrame(loop);
+}
+
+function drawCross(res) {
+  ctx.strokeStyle = '#E24B4A';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(res.cx - 12, res.cy); ctx.lineTo(res.cx + 12, res.cy);
+  ctx.moveTo(res.cx, res.cy - 12); ctx.lineTo(res.cx, res.cy + 12);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.arc(res.cx, res.cy, 16, 0, Math.PI * 2);
+  ctx.stroke();
+}
+
+function grab() {
+  if (!live) { alert('先连接相机'); return; }
+  live = false;
+  if (rafId) { cancelAnimationFrame(rafId); rafId = null; }
+  const r = analyze();
+  const st = document.getElementById('status');
+  document.getElementById('btnLive').disabled = false;
+  if (!r) {
+    current = { cx: null, cy: null, name: '相机采样' };
+    st.innerHTML = '<span class="badge err">没识别到</span> 目标不在画面里或亮度不够。点「继续预览」重试。';
+    return;
+  }
+  current = { cx: r.cx, cy: r.cy, name: '相机采样' };
+  drawCross(r);
+  st.innerHTML = '<span class="badge ok">采样</span> 质心 (' + r.cx.toFixed(1) + ', ' +
+    r.cy.toFixed(1) + ')，绿像素 ' + r.n +
+    '。填真实角度后点「加入样本」，再点「继续预览」换个位置。';
+}
+
+function resumeLive() {
+  if (!stream) { alert('相机已断开，重新连接'); return; }
+  current = { cx: null, cy: null, name: '' };
+  live = true;
+  document.getElementById('btnLive').disabled = true;
+  loop();
 }
 
 document.getElementById('file').addEventListener('change', e => {
