@@ -1,0 +1,356 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>焦距现场标定 · rm_dart</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 20px; font-family: "Microsoft YaHei", "PingFang SC", sans-serif;
+    background: #f5f5f3; color: #2c2c2a; font-size: 14px;
+  }
+  h1 { font-size: 17px; font-weight: 500; margin: 0 0 4px; }
+  .sub { color: #6b6a65; font-size: 12px; margin-bottom: 16px; line-height: 1.6; }
+  .wrap { display: flex; gap: 20px; align-items: flex-start; flex-wrap: wrap; }
+  .card {
+    background: #fff; border: 1px solid rgba(0,0,0,0.10); border-radius: 10px;
+    padding: 16px 18px;
+  }
+  .left { flex: 1 1 640px; min-width: 340px; }
+  .right { flex: 0 0 360px; min-width: 320px; }
+  canvas {
+    width: 100%; max-width: 640px; aspect-ratio: 4 / 3; display: block;
+    background: #111; border-radius: 6px; image-rendering: pixelated;
+  }
+  .row { display: flex; gap: 8px; align-items: center; margin: 8px 0; flex-wrap: wrap; }
+  .row label { color: #55544f; font-size: 13px; }
+  input[type=number], input[type=text] {
+    width: 84px; padding: 6px 8px; border: 1px solid rgba(0,0,0,0.2);
+    border-radius: 6px; font-size: 13px; font-family: inherit;
+  }
+  input[type=file] { font-size: 12px; }
+  button {
+    padding: 7px 14px; border: 1px solid rgba(0,0,0,0.18); background: #fff;
+    border-radius: 6px; font-size: 13px; cursor: pointer; font-family: inherit;
+  }
+  button:hover { background: #f0efec; }
+  button.primary { background: #185FA5; color: #fff; border-color: #185FA5; }
+  button.primary:hover { background: #134b84; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 6px; }
+  th, td { padding: 6px 4px; text-align: center; border-bottom: 1px solid rgba(0,0,0,0.08); }
+  th { color: #6b6a65; font-weight: 500; font-size: 12px; }
+  .muted { color: #8a8983; font-size: 12px; }
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 12px; }
+  .badge.ok { background: #E1F5EE; color: #0F6E56; }
+  .badge.warn { background: #FAEEDA; color: #854F0B; }
+  .badge.err { background: #FCEBEB; color: #A32D2D; }
+  #result { white-space: pre-wrap; font-family: Consolas, monospace; font-size: 12.5px;
+            line-height: 1.7; background: #faf9f6; padding: 12px; border-radius: 6px;
+            margin-top: 8px; min-height: 120px; }
+  .status { margin-top: 8px; font-size: 12px; color: #55544f; min-height: 18px; }
+  .chk { display: flex; align-items: center; gap: 6px; font-size: 12.5px; }
+</style>
+</head>
+<body>
+
+<h1>焦距现场标定</h1>
+<div class="sub">
+  目标是一盏绿灯。量两个数（距离 L、横移 W），加载两张图，点「加入样本」，最后「计算焦距」。<br>
+  识别阈值与 main.py 一致：<code>L 9~100, A -102~-25, B 0~127</code>。<br>
+  角度符号：目标在画面<b>右侧</b>填正、<b>左侧</b>填负（与 los_yaw 反号，标定只看幅值）。
+</div>
+
+<div class="wrap">
+  <div class="card left">
+    <div class="row">
+      <input type="file" id="file" accept="image/*,.mjpeg,.bin">
+      <span class="muted" id="fname">未加载</span>
+    </div>
+    <canvas id="cv" width="320" height="240"></canvas>
+    <div class="status" id="status">等待图片</div>
+  </div>
+
+  <div class="card right">
+    <div class="row">
+      <label>距离 L (m)</label><input type="number" id="L" value="3.0" step="0.01">
+      <label>横移 W (m)</label><input type="number" id="W" value="0.5" step="0.01">
+    </div>
+    <div class="row">
+      <button onclick="calcAngle()">用 L/W 算角度</button>
+      <label>真实角度</label><input type="number" id="ang" step="0.01"> <span class="muted">度</span>
+    </div>
+    <div class="row">
+      <button class="primary" onclick="addSample()">加入样本</button>
+      <button onclick="clearAll()">清空</button>
+    </div>
+
+    <table>
+      <thead><tr><th>质心 cx</th><th>角度</th><th>反推焦距</th><th></th></tr></thead>
+      <tbody id="tbody"><tr><td colspan="4" class="muted">还没有样本</td></tr></tbody>
+    </table>
+
+    <div class="row" style="margin-top:12px">
+      <button class="primary" onclick="compute()">计算焦距</button>
+      <button onclick="selftest()">自检</button>
+      <span id="badge"></span>
+    </div>
+    <div id="result">加载图片后这里显示结果。</div>
+  </div>
+</div>
+
+<script>
+const IMG_W = 320, IMG_H = 240, GUIDE_CX = 160, GUIDE_CY = 115, FOCAL = 480;
+const TH = [9, 100, -102, -25, 0, 127];
+
+const cv = document.getElementById('cv');
+const ctx = cv.getContext('2d', { willReadFrequently: true });
+let current = { cx: null, cy: null, name: '' };
+let samples = [];
+
+const LIN = [];
+for (let i = 0; i < 256; i++) {
+  const c = i / 255;
+  LIN.push(c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4));
+}
+
+function rgb2lab(r, g, b) {
+  const rl = LIN[r], gl = LIN[g], bl = LIN[b];
+  const x = (0.4124 * rl + 0.3576 * gl + 0.1805 * bl) / 0.95047;
+  const y = 0.2126 * rl + 0.7152 * gl + 0.0722 * bl;
+  const z = (0.0193 * rl + 0.1192 * gl + 0.9505 * bl) / 1.08883;
+  const f = t => t > 0.008856 ? Math.cbrt(t) : 7.787 * t + 16 / 116;
+  const fx = f(x), fy = f(y), fz = f(z);
+  return [116 * fy - 16, 500 * (fx - fy), 200 * (fy - fz)];
+}
+
+function analyze() {
+  const d = ctx.getImageData(0, 0, IMG_W, IMG_H).data;
+  let sx = 0, sy = 0, n = 0;
+  for (let y = 0; y < IMG_H; y++) {
+    for (let x = 0; x < IMG_W; x++) {
+      const i = (y * IMG_W + x) * 4;
+      const r = d[i], g = d[i + 1], b = d[i + 2];
+      if (g < 40 || g <= r || g <= b) continue;
+      const lab = rgb2lab(r, g, b);
+      if (lab[0] >= TH[0] && lab[0] <= TH[1] &&
+          lab[1] >= TH[2] && lab[1] <= TH[3] &&
+          lab[2] >= TH[4] && lab[2] <= TH[5]) {
+        sx += x; sy += y; n++;
+      }
+    }
+  }
+  if (n < 8) return null;
+  return { cx: sx / n, cy: sy / n, n };
+}
+
+function draw(img, res) {
+  ctx.clearRect(0, 0, IMG_W, IMG_H);
+  ctx.drawImage(img, 0, 0, IMG_W, IMG_H);
+  ctx.strokeStyle = 'rgba(55,138,221,0.75)';
+  ctx.setLineDash([4, 4]);
+  ctx.beginPath();
+  ctx.moveTo(GUIDE_CX, 0); ctx.lineTo(GUIDE_CX, IMG_H);
+  ctx.moveTo(0, GUIDE_CY); ctx.lineTo(IMG_W, GUIDE_CY);
+  ctx.stroke();
+  ctx.setLineDash([]);
+  if (res) {
+    ctx.strokeStyle = '#E24B4A';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(res.cx - 12, res.cy); ctx.lineTo(res.cx + 12, res.cy);
+    ctx.moveTo(res.cx, res.cy - 12); ctx.lineTo(res.cx, res.cy + 12);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(res.cx, res.cy, 16, 0, Math.PI * 2);
+    ctx.stroke();
+  }
+}
+
+function renderLoaded(img, name) {
+  draw(img, null);
+  const res = analyze();
+  current = { cx: res ? res.cx : null, cy: res ? res.cy : null, name: name };
+  draw(img, res);
+  document.getElementById('fname').textContent = name;
+  const st = document.getElementById('status');
+  if (!res) {
+    st.innerHTML = '<span class="badge err">没识别到绿色目标</span> 换一张，或确认目标在画面内。';
+    return;
+  }
+  st.innerHTML = '<span class="badge ok">识别到</span> 质心 (' + res.cx.toFixed(1) + ', ' +
+    res.cy.toFixed(1) + ')，绿像素 ' + res.n + ' 个。当前焦距 ' + FOCAL +
+    ' 下角度 ' + angleOf(res.cx).toFixed(2) + '°';
+}
+
+function loadImageFile(f) {
+  const url = URL.createObjectURL(f);
+  const img = new Image();
+  img.onload = () => { renderLoaded(img, f.name); URL.revokeObjectURL(url); };
+  img.src = url;
+}
+
+async function loadMjpegFile(f) {
+  const buf = new Uint8Array(await f.arrayBuffer());
+  const starts = [];
+  for (let i = 0; i + 2 < buf.length; i++) {
+    if (buf[i] === 0xFF && buf[i + 1] === 0xD8 && buf[i + 2] === 0xFF) starts.push(i);
+  }
+  if (!starts.length) { alert('这个文件里没有解析到 JPEG 帧'); return; }
+  const ans = prompt('共 ' + starts.length + ' 帧，取第几帧？（从 0 开始）', '0');
+  if (ans === null) return;
+  let idx = parseInt(ans, 10);
+  if (!isFinite(idx)) idx = 0;
+  idx = Math.max(0, Math.min(idx, starts.length - 1));
+  const s = starts[idx];
+  const e = (idx + 1 < starts.length) ? starts[idx + 1] : buf.length;
+  const blob = new Blob([buf.subarray(s, e)], { type: 'image/jpeg' });
+  const url = URL.createObjectURL(blob);
+  const img = new Image();
+  img.onload = () => { renderLoaded(img, f.name + ' #' + idx); URL.revokeObjectURL(url); };
+  img.src = url;
+}
+
+document.getElementById('file').addEventListener('change', e => {
+  const f = e.target.files[0];
+  if (!f) return;
+  if (/\.(mjpeg|bin)$/i.test(f.name)) loadMjpegFile(f);
+  else loadImageFile(f);
+  e.target.value = '';
+});
+
+function angleOf(cx) {
+  return Math.atan((cx - GUIDE_CX) / FOCAL) * 180 / Math.PI;
+}
+function suggestFocal(cx, deg) {
+  const t = Math.tan(deg * Math.PI / 180);
+  if (Math.abs(t) < 1e-6) return null;
+  return (cx - GUIDE_CX) / t;
+}
+
+function calcAngle() {
+  const L = parseFloat(document.getElementById('L').value);
+  const W = parseFloat(document.getElementById('W').value);
+  if (!(L > 0)) { alert('距离 L 要填正数'); return; }
+  const ang = Math.atan(W / L) * 180 / Math.PI;
+  document.getElementById('ang').value = ang.toFixed(2);
+  document.getElementById('status').textContent =
+    '真实角度 = atan(' + W + ' / ' + L + ') = ' + ang.toFixed(2) + '°';
+}
+
+function addSample() {
+  if (current.cx === null) { alert('先加载一张识别到目标的图'); return; }
+  const ang = parseFloat(document.getElementById('ang').value);
+  if (!isFinite(ang)) { alert('先填真实角度，或点「用 L/W 算角度」'); return; }
+  if (Math.abs(ang) < 3) { alert('角度太小（<3°），反推焦距会把误差放大，换个更偏的位置'); return; }
+  const f = suggestFocal(current.cx, ang);
+  if (f === null) { alert('角度为 0，无法反推'); return; }
+  samples.push({ name: current.name, cx: current.cx, ang: ang, f: f });
+  renderTable();
+  document.getElementById('status').textContent = '已加入样本，共 ' + samples.length + ' 个';
+}
+
+function renderTable() {
+  const tb = document.getElementById('tbody');
+  if (!samples.length) {
+    tb.innerHTML = '<tr><td colspan="4" class="muted">还没有样本</td></tr>';
+    return;
+  }
+  tb.innerHTML = samples.map((s, i) =>
+    '<tr><td>' + s.cx.toFixed(1) + '</td><td>' + s.ang.toFixed(2) + '°</td><td>' +
+    s.f.toFixed(0) + '</td><td><button onclick="del(' + i + ')">删</button></td></tr>'
+  ).join('');
+}
+
+function del(i) { samples.splice(i, 1); renderTable(); }
+
+function selftest() {
+  const c = document.createElement('canvas');
+  c.width = IMG_W; c.height = IMG_H;
+  const x = c.getContext('2d');
+  x.fillStyle = '#282828'; x.fillRect(0, 0, IMG_W, IMG_H);
+  x.fillStyle = 'rgb(0,200,0)'; x.fillRect(220, 95, 40, 40);
+  ctx.clearRect(0, 0, IMG_W, IMG_H);
+  ctx.drawImage(c, 0, 0);
+  const r = analyze();
+  if (!r) { alert('自检失败：合成绿块没被识别，检查阈值'); return; }
+  const f = suggestFocal(r.cx, 9.46);
+  const ok = Math.abs(r.cx - 240) < 2 && Math.abs(f - 480) < 15;
+  current = { cx: r.cx, cy: r.cy, name: '自检图' };
+  draw(c, r);
+  document.getElementById('fname').textContent = '自检图';
+  document.getElementById('status').textContent =
+    '自检：质心 ' + r.cx.toFixed(1) + '（应 240），绿像素 ' + r.n + '，反推焦距 ' + f.toFixed(0) + ' px（应 480）';
+  alert((ok ? '自检通过' : '自检不正常') + '
+
+质心 cx = ' + r.cx.toFixed(1) + '（应 240）
+' +
+        '给 9.46 度反推焦距 = ' + f.toFixed(0) + ' px（应 480）');
+}
+
+function clearAll() {
+  samples = []; renderTable();
+  document.getElementById('result').textContent = '已清空。';
+  document.getElementById('badge').innerHTML = '';
+}
+
+function compute() {
+  if (!samples.length) { alert('还没有样本'); return; }
+  let num = 0, den = 0;
+  for (const s of samples) {
+    const t = Math.tan(s.ang * Math.PI / 180);
+    num += t * (s.cx - GUIDE_CX);
+    den += t * t;
+  }
+  const fLs = den > 1e-9 ? num / den : null;
+  const per = samples.map(s => s.f).filter(v => v > 50 && v < 5000);
+  const avg = per.length ? per.reduce((a, b) => a + b, 0) / per.length : null;
+  const spread = per.length > 1 ? (Math.max(...per) - Math.min(...per)) / avg : 0;
+
+  const f = fLs || avg;
+  const out = [];
+  const badge = document.getElementById('badge');
+  out.push('样本 ' + samples.length + ' 个');
+  if (per.length) out.push('单点焦距：' + per.map(v => v.toFixed(0)).join(', ') + ' px');
+  if (avg) out.push('平均 ' + avg.toFixed(0) + ' px   极差 ' + (spread * 100).toFixed(1) + '%');
+  out.push('');
+
+  if (!f || f < 50 || f > 5000) {
+    out.push('结果无效：检查 L/W 是否量错、目标是否在同一个高度。');
+    badge.innerHTML = '<span class="badge err">无效</span>';
+    document.getElementById('result').textContent = out.join('\n');
+    return;
+  }
+
+  const k = f / FOCAL;
+  out.push('=> 建议焦距 ' + f.toFixed(0) + ' px   （当前 ' + FOCAL + '）');
+  out.push('   比例 k = ' + k.toFixed(3));
+  out.push('');
+  out.push('改 ctl_task.h：');
+  out.push('  DART_CAMERA_FOCAL_X_PX  ' + f.toFixed(0));
+  out.push('  DART_CAMERA_FOCAL_Y_PX  ' + f.toFixed(0));
+  out.push('');
+  out.push('同步缩放 PID（保持等效增益）：');
+  out.push('  KP = 14 x ' + (1 / k).toFixed(3) + ' = ' + (14 / k).toFixed(1));
+  out.push('  KD = 3.0 x ' + (1 / k).toFixed(3) + ' = ' + (3 / k).toFixed(2));
+  out.push('');
+
+  if (spread > 0.08) {
+    out.push('样本离散 ' + (spread * 100).toFixed(1) + '%（>8%）。');
+    out.push('常见原因：L/W 量错、目标不是一个点、机身没摆正、');
+    out.push('或者两次拍照时机头被碰动了。');
+    badge.innerHTML = '<span class="badge warn">离散偏大</span>';
+  } else {
+    out.push('样本一致性可以，可以采信。');
+    badge.innerHTML = '<span class="badge ok">可用</span>';
+  }
+  document.getElementById('result').textContent = out.join('\n');
+}
+
+ctx.fillStyle = '#111';
+ctx.fillRect(0, 0, IMG_W, IMG_H);
+ctx.fillStyle = '#666';
+ctx.font = '13px sans-serif';
+ctx.fillText('加载图片后显示预览', 88, 124);
+</script>
+</body>
+</html>
