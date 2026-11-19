@@ -68,7 +68,7 @@ extern "C" {
    gyro 单位 0.1 deg/s，角度单位 0.01 deg；
    LOS 为相对上电 1 s 参考角的增量（0.01 deg），舵机角 0.1 deg；
    CRC 覆盖字节 0..35。 */
-#define DART_ATT_FRAME_LEN                    45U
+#define DART_ATT_FRAME_LEN                    49U
 #define DART_ATT_SOF_INDEX                     0U
 #define DART_ATT_GYRO_X_H_INDEX                1U
 #define DART_ATT_GYRO_X_L_INDEX                2U
@@ -105,17 +105,23 @@ extern "C" {
 #define DART_ATT_SERVO4_L_INDEX               33U
 #define DART_ATT_DBG_FLAGS_INDEX              34U
 /* 2026-11-18 新增：yaw 制导调试量（PN + 加速度内环）。
-   帧长 37 -> 45，EOF/CRC 后移到 43/44。上位机 main.py 必须同步。 */
+   帧长 37 -> 45，EOF/CRC 后移到 43/44。上位机 main.py 必须同步。
+   2026-11-20：YAW_U 槽改报惯性视线角速率（度/秒），并新增绿灯像素坐标 X/Y，
+   帧长 45 -> 49，EOF/CRC 后移到 47/48。main.py 必须同步。 */
 #define DART_ATT_A_MEAS_H_INDEX               35U
 #define DART_ATT_A_MEAS_L_INDEX               36U
 #define DART_ATT_A_CMD_H_INDEX                37U
 #define DART_ATT_A_CMD_L_INDEX                38U
 #define DART_ATT_PN_OMEGA_H_INDEX             39U
 #define DART_ATT_PN_OMEGA_L_INDEX             40U
-#define DART_ATT_YAW_U_H_INDEX                41U
-#define DART_ATT_YAW_U_L_INDEX                42U
-#define DART_ATT_EOF_INDEX                    43U
-#define DART_ATT_CRC_INDEX                    44U
+#define DART_ATT_VIS_RATE_H_INDEX             41U
+#define DART_ATT_VIS_RATE_L_INDEX             42U
+#define DART_ATT_VIS_X_H_INDEX                43U
+#define DART_ATT_VIS_X_L_INDEX                44U
+#define DART_ATT_VIS_Y_H_INDEX                45U
+#define DART_ATT_VIS_Y_L_INDEX                46U
+#define DART_ATT_EOF_INDEX                    47U
+#define DART_ATT_CRC_INDEX                    48U
 #define DART_ATT_SOF                        0x55U
 #define DART_ATT_EOF                        0xFEU
 #define DART_ATT_ANGLE_SCALE               100.0f

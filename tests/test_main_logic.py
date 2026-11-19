@@ -254,7 +254,8 @@ class MainLogicTest(unittest.TestCase):
         fake_time.now = 10
         raw = frame(ns, 0, 0, 0, ns["STATE_DESCENT"])
         for name, value in (("A_MEAS", 350), ("A_CMD", -1225),
-                            ("PN_OMEGA", 2500), ("YAW_U", -180)):
+                            ("PN_OMEGA", 2500), ("VIS_RATE", -180),
+                            ("VIS_X", 96), ("VIS_Y", -42)):
             raw[ns["T_" + name + "_H"]] = (value >> 8) & 0xFF
             raw[ns["T_" + name + "_L"]] = value & 0xFF
         raw[ns["T_CRC_INDEX"]] = ns["crc8_lsb"](raw, 0, ns["T_CRC_INDEX"])
@@ -264,7 +265,9 @@ class MainLogicTest(unittest.TestCase):
         self.assertEqual(cols[20], "3.50")
         self.assertEqual(cols[21], "-12.25")
         self.assertEqual(cols[22], "25.0")
-        self.assertEqual(cols[23], "-180.0")
+        self.assertEqual(cols[23], "-1.8")     # 视线角速率 /100
+        self.assertEqual(cols[24], "96")       # 绿灯像素 x，不缩放
+        self.assertEqual(cols[25], "-42")      # 绿灯像素 y
 
     def test_recording_starts_after_missed_launch_and_closes_after_launch_cap(self):
         ns, fake_time, uart = load_logic()

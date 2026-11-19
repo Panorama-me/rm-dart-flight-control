@@ -1469,11 +1469,13 @@ void attitude_telemetry_send(void)
     int16_t a_meas_raw;
     int16_t a_cmd_raw;
     int16_t pn_omega_raw;
-    int16_t yaw_u_raw;
+    int16_t vis_rate_raw;
+    int16_t vis_x_raw;
+    int16_t vis_y_raw;
     float a_meas_snap;
     float a_cmd_snap;
     float pn_omega_snap;
-    float yaw_u_snap;
+    float vis_rate_snap;
     float los_yaw_deg_out;
     float los_pitch_deg_out;
     uint8_t dbg_flags;
@@ -1513,7 +1515,6 @@ void attitude_telemetry_send(void)
          PN_OMEGA 槽 -> 限幅后的攻角偏置（度，+-10）
        加速度计在下降段本就不可用、PN 角速率在 MODE 2 下也用不上，
        换成这两个现场能直接判读的量。 */
-    (void)dbg_pn_omega;   /* MODE 0/2 不再上报它，显式引用避免“只写不读”告警 */
     a_meas_snap = 0.0f;
     pn_omega_snap = 0.0f;
     if (DartControl.yaw_best_valid)
@@ -1525,7 +1526,7 @@ void attitude_telemetry_send(void)
                                         DART_YAW_AOA_MAX_DEG);
     }
     a_cmd_snap = dbg_a_cmd;
-    yaw_u_snap = dbg_yaw_u;
+    vis_rate_snap = dbg_pn_omega;   /* 惯性视线角速率，度/秒 */
     if (primask == 0U)
         __enable_irq();
 
@@ -1612,15 +1613,21 @@ void attitude_telemetry_send(void)
     a_meas_raw = (int16_t)(a_meas_snap * DART_ATT_ACCEL_SCALE);
     a_cmd_raw = (int16_t)(a_cmd_snap * DART_ATT_ACCEL_SCALE);
     pn_omega_raw = (int16_t)(pn_omega_snap * DART_ATT_RATE_SCALE);
-    yaw_u_raw = (int16_t)(yaw_u_snap * DART_ATT_US_SCALE);
+    vis_rate_raw = (int16_t)(vis_rate_snap * DART_ATT_RATE_SCALE);
+    vis_x_raw = DartControl.telemetry.vision.raw_x;
+    vis_y_raw = DartControl.telemetry.vision.raw_y;
     tx_frame[DART_ATT_A_MEAS_H_INDEX] = (uint8_t)((uint16_t)a_meas_raw >> 8U);
     tx_frame[DART_ATT_A_MEAS_L_INDEX] = (uint8_t)a_meas_raw;
     tx_frame[DART_ATT_A_CMD_H_INDEX] = (uint8_t)((uint16_t)a_cmd_raw >> 8U);
     tx_frame[DART_ATT_A_CMD_L_INDEX] = (uint8_t)a_cmd_raw;
     tx_frame[DART_ATT_PN_OMEGA_H_INDEX] = (uint8_t)((uint16_t)pn_omega_raw >> 8U);
     tx_frame[DART_ATT_PN_OMEGA_L_INDEX] = (uint8_t)pn_omega_raw;
-    tx_frame[DART_ATT_YAW_U_H_INDEX] = (uint8_t)((uint16_t)yaw_u_raw >> 8U);
-    tx_frame[DART_ATT_YAW_U_L_INDEX] = (uint8_t)yaw_u_raw;
+    tx_frame[DART_ATT_VIS_RATE_H_INDEX] = (uint8_t)((uint16_t)vis_rate_raw >> 8U);
+    tx_frame[DART_ATT_VIS_RATE_L_INDEX] = (uint8_t)vis_rate_raw;
+    tx_frame[DART_ATT_VIS_X_H_INDEX] = (uint8_t)((uint16_t)vis_x_raw >> 8U);
+    tx_frame[DART_ATT_VIS_X_L_INDEX] = (uint8_t)vis_x_raw;
+    tx_frame[DART_ATT_VIS_Y_H_INDEX] = (uint8_t)((uint16_t)vis_y_raw >> 8U);
+    tx_frame[DART_ATT_VIS_Y_L_INDEX] = (uint8_t)vis_y_raw;
     tx_frame[DART_ATT_EOF_INDEX] = DART_ATT_EOF;
     tx_frame[DART_ATT_CRC_INDEX] =
         vision_crc8(tx_frame, DART_ATT_CRC_INDEX);
@@ -1835,16 +1842,18 @@ void control_Task(void)
     (void)dbg_a_meas;
     dbg_a_cmd = 0.0f;              /* 只有下降段视觉引导才产生加速度指令 */
     dbg_yaw_u = DartControl.telemetry.yaw_output_us;
+    (void)dbg_yaw_u;   /* yaw_u 槽位改报视线角速率后它只供台架分支使用 */
+    /* 惯性系视线角速率：每个控制周期都算。2026-11-20 起 yaw_u 槽位改报它，
+       飞行中必须有值——原来只在待发/DEBUG 分支里算，下降段恒为 0。 */
+    dbg_pn_omega = constrain_float(
+        (DART_CAMERA_YAW_SIGN * DartControl.vision_x_ekf.rate +
+         DART_INS_YAW_RATE_RAD_S(&ins_snapshot)) * DART_RAD_TO_DEG,
+        -DART_PN_RATE_MAX, DART_PN_RATE_MAX);
     if ((DartControl.flight_state <= DART_STATE_SERVO_READY) ||
         (DartControl.flight_state == DART_STATE_DEBUG))
     {
         float gz_dps_dbg =
             DART_INS_YAW_RATE_RAD_S(&ins_snapshot) * DART_RAD_TO_DEG;
-        /* 与下降段同公式：相机项 + 机体角速率，得到惯性系视线角速率。 */
-        dbg_pn_omega = constrain_float(
-            (DART_CAMERA_YAW_SIGN * DartControl.vision_x_ekf.rate +
-             DART_INS_YAW_RATE_RAD_S(&ins_snapshot)) * DART_RAD_TO_DEG,
-            -DART_PN_RATE_MAX, DART_PN_RATE_MAX);
 #if (DART_YAW_PN_MODE == DART_YAW_PN_MODE_AOA)
         /* 台架可视化：复现攻角偏置与 PID 输出，只写遥测不驱动舵机。 */
         {

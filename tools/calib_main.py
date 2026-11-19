@@ -133,7 +133,7 @@ THRESHOLDS1 = [(9, 100, -102, -25, 0, 127)]
 
 FRAME_SIZE = sensor.QVGA
 PIXFORMAT = sensor.RGB565
-EXPOSURE_US = 100
+EXPOSURE_US = 800
 SKIP_FRAMES_MS = 1500
 
 GUIDE_CX = BLOB_ROI[0] + BLOB_ROI[2] // 2
@@ -157,10 +157,10 @@ ACK_FRAME_LEN = 4
 RESET_SOF = 0x5B
 RESET_FRAME_LEN = 4
 
-# 遥测：F103 -> OpenMV，45 字节
+# 遥测：F103 -> OpenMV，49 字节
 TELEM_SOF = 0x55
 TELEM_EOF = 0xFE
-TELEM_FRAME_LEN = 45
+TELEM_FRAME_LEN = 49
 TELEM_ANGLE_SCALE = 100.0
 TELEM_GYRO_SCALE = 10.0
 TELEM_LOS_SCALE = 100.0
@@ -209,10 +209,14 @@ T_A_CMD_H = 37
 T_A_CMD_L = 38
 T_PN_OMEGA_H = 39
 T_PN_OMEGA_L = 40
-T_YAW_U_H = 41
-T_YAW_U_L = 42
-T_EOF_INDEX = 43
-T_CRC_INDEX = 44
+T_VIS_RATE_H = 41
+T_VIS_RATE_L = 42
+T_VIS_X_H = 43
+T_VIS_X_L = 44
+T_VIS_Y_H = 45
+T_VIS_Y_L = 46
+T_EOF_INDEX = 47
+T_CRC_INDEX = 48
 
 F_LINK_VALID = 0x01
 F_TARGET_VALID = 0x02
@@ -386,7 +390,9 @@ telem_dbg_flags = 0
 telem_a_meas = 0.0
 telem_a_cmd = 0.0
 telem_pn_omega = 0.0
-telem_yaw_u = 0.0
+telem_vis_rate = 0.0
+telem_vis_x = 0
+telem_vis_y = 0
 telem_link = 0
 telem_last_ms = 0
 telem_ok_printed = False
@@ -405,7 +411,8 @@ def poll_telemetry():
     global telem_out_pitch, telem_out_yaw, telem_out_roll
     global telem_mode, telem_state, telem_flags
     global telem_los_yaw, telem_los_pitch, telem_dbg_flags
-    global telem_a_meas, telem_a_cmd, telem_pn_omega, telem_yaw_u
+    global telem_a_meas, telem_a_cmd, telem_pn_omega
+    global telem_vis_rate, telem_vis_x, telem_vis_y
     global telem_link, telem_last_ms
     global telem_ok_printed, last_no_link_print
     global fw_marker_warned
@@ -479,14 +486,18 @@ def poll_telemetry():
         telem_servo[3] = s16(telem_buf[b + T_SERVO4_H],
                              telem_buf[b + T_SERVO4_L]) / TELEM_SERVO_SCALE
         telem_dbg_flags = telem_buf[b + T_DBG_FLAGS_INDEX]
+        # 2026-11-19 起这两个槽位改报：dpsi（best-launch，度）与攻角偏置（度）。
         telem_a_meas = s16(telem_buf[b + T_A_MEAS_H],
                            telem_buf[b + T_A_MEAS_L]) / TELEM_ACCEL_SCALE
         telem_a_cmd = s16(telem_buf[b + T_A_CMD_H],
                           telem_buf[b + T_A_CMD_L]) / TELEM_ACCEL_SCALE
         telem_pn_omega = s16(telem_buf[b + T_PN_OMEGA_H],
                              telem_buf[b + T_PN_OMEGA_L]) / TELEM_RATE_SCALE
-        telem_yaw_u = s16(telem_buf[b + T_YAW_U_H],
-                          telem_buf[b + T_YAW_U_L]) / TELEM_US_SCALE
+        # 2026-11-20 起：yaw_u 槽改报惯性视线角速率，并新增绿灯像素坐标
+        telem_vis_rate = s16(telem_buf[b + T_VIS_RATE_H],
+                             telem_buf[b + T_VIS_RATE_L]) / TELEM_RATE_SCALE
+        telem_vis_x = s16(telem_buf[b + T_VIS_X_H], telem_buf[b + T_VIS_X_L])
+        telem_vis_y = s16(telem_buf[b + T_VIS_Y_H], telem_buf[b + T_VIS_Y_L])
 
         # Latch the flight transitions from every valid UART frame. The camera
         # loop may skip a short LAUNCHED state while writing an image frame.
@@ -678,7 +689,8 @@ def append_telemetry_log(now_ms, frame_number):
                          "pitch_deg,yaw_deg,roll_deg,out_pitch_deg,"
                          "out_yaw_deg,out_roll_deg,los_yaw_deg,los_pitch_deg,"
                          "s1_deg,s2_deg,s3_deg,s4_deg,"
-                         "a_meas_ms2,a_cmd_ms2,pn_omega_dps,yaw_u_us,vis_dx,vis_dy\n")
+                         "yaw_best_rel_deg,a_cmd_ms2,aoa_gain_deg,"
+                         "vis_rate_dps,vis_x_px,vis_y_px,vis_dx,vis_dy\n")
         except Exception as e:
             if stream is not None:
                 try:
@@ -697,7 +709,7 @@ def append_telemetry_log(now_ms, frame_number):
     try:
         telem_log_stream.write(
             "%d,%d,%d,%d,%d,%.1f,%.1f,%.1f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,"
-            "%.2f,%.2f,%.1f,%.1f,%.1f,%.1f,%.2f,%.2f,%.1f,%.1f,%.2f,%.2f\n"
+            "%.2f,%.2f,%.1f,%.1f,%.1f,%.1f,%.2f,%.2f,%.1f,%.1f,%d,%d,%.2f,%.2f\n"
             % (time.ticks_diff(now_ms, start), frame_number,
                telem_mode, telem_state, telem_flags,
                telem_gyro_x, telem_gyro_y, telem_gyro_z,
@@ -706,7 +718,8 @@ def append_telemetry_log(now_ms, frame_number):
                telem_los_yaw, telem_los_pitch,
                telem_servo[0], telem_servo[1],
                telem_servo[2], telem_servo[3],
-               telem_a_meas, telem_a_cmd, telem_pn_omega, telem_yaw_u,
+               telem_a_meas, telem_a_cmd, telem_pn_omega,
+               telem_vis_rate, telem_vis_x, telem_vis_y,
                vis_dx, vis_dy))
     except Exception as e:
         print("[DEBUG] telem log write err:", e)

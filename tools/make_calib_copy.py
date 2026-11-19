@@ -64,18 +64,18 @@ REPLACES = [
         '视觉帧保存 dx/dy',
     ),
     (
-        '"a_meas_ms2,a_cmd_ms2,pn_omega_dps,yaw_u_us\\n")',
-        '"a_meas_ms2,a_cmd_ms2,pn_omega_dps,yaw_u_us,vis_dx,vis_dy\\n")',
+        '"vis_rate_dps,vis_x_px,vis_y_px\\n")',
+        '"vis_rate_dps,vis_x_px,vis_y_px,vis_dx,vis_dy\\n")',
         '遥测表头追加两列',
     ),
     (
-        '"%.2f,%.2f,%.1f,%.1f,%.1f,%.1f,%.2f,%.2f,%.1f,%.1f\\n"',
-        '"%.2f,%.2f,%.1f,%.1f,%.1f,%.1f,%.2f,%.2f,%.1f,%.1f,%.2f,%.2f\\n"',
+        '"%.2f,%.2f,%.1f,%.1f,%.1f,%.1f,%.2f,%.2f,%.1f,%.1f,%d,%d\\n"',
+        '"%.2f,%.2f,%.1f,%.1f,%.1f,%.1f,%.2f,%.2f,%.1f,%.1f,%d,%d,%.2f,%.2f\\n"',
         '遥测格式串追加两个字段',
     ),
     (
-        'telem_a_meas, telem_a_cmd, telem_pn_omega, telem_yaw_u))',
-        'telem_a_meas, telem_a_cmd, telem_pn_omega, telem_yaw_u,\n'
+        'telem_vis_rate, telem_vis_x, telem_vis_y))',
+        'telem_vis_rate, telem_vis_x, telem_vis_y,\n'
         '               vis_dx, vis_dy))',
         '遥测参数追加 vis_dx/vis_dy',
     ),
