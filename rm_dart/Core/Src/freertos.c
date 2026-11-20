@@ -120,7 +120,14 @@ void MX_FREERTOS_Init(void) {
   LED_TaskHandle = osThreadNew(led_task, NULL, &LED_Task_attributes);
 
   /* USER CODE BEGIN RTOS_THREADS */
-  /* add threads, ... */
+  /* 2026-11-21：configTOTAL_HEAP_SIZE 收到 6144 B（三任务共约 3.9 kB）。
+     堆不足时 osThreadNew 返回 NULL，任务静默不运行、舵机永远不输出，
+     现场会表现成"没反应"。这里拦成 Error_Handler，把静默失败变成可见故障。 */
+  if ((Ins_TaskHandle == NULL) || (CTL_TaskHandle == NULL) ||
+      (LED_TaskHandle == NULL))
+  {
+    Error_Handler();
+  }
   /* USER CODE END RTOS_THREADS */
 
   /* USER CODE BEGIN RTOS_EVENTS */

@@ -40,7 +40,9 @@ __initial_sp
 ;   <o>  Heap Size (in Bytes) <0x0-0xFFFFFFFF:8>
 ; </h>
 
-Heap_Size      EQU     0x200
+; 2026-11-21：0x200 -> 0。全工程无 malloc/printf，Keil 的 __heap 无人使用。
+; 若将来引入 printf/sprintf，必须改回 0x200 以上。
+Heap_Size      EQU     0x000
 
                 AREA    HEAP, NOINIT, READWRITE, ALIGN=3
 __heap_base

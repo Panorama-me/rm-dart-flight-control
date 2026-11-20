@@ -5,7 +5,7 @@ STM32F103 + OpenMV 的双控制器原型工程。F103 负责姿态解算、起�
 ![固件](https://img.shields.io/badge/firmware-STM32F103C8-blue) ![IDE](https://img.shields.io/badge/IDE-Keil%20MDK%20ARMCC%205.06-orange) ![vision](https://img.shields.io/badge/vision-OpenMV%20QVGA-green) ![status](https://img.shields.io/badge/status-bench%20only-red)
 
 > **状态：已实飞 39 发（11.15）。** 参数已按飞行数据整定过若干轮，但**视觉 yaw 回路仍在
-> 不稳定边界上**（等效 KP=20、环路延迟 330 ms），详见 `docs/AI交接.md` 第 4 节。
+> 不稳定边界上**（等效 KP=20、环路延迟 330 ms），详见 `docs/技术手册.md` 第 7 章。
 > 首次测试仍必须拆除动力或牢固约束机体。
 
 最后更新：2026-11-16
@@ -34,8 +34,7 @@ STM32F103 + OpenMV 的双控制器原型工程。F103 负责姿态解算、起�
 .
 ├── README.md                 本文件：总览、接线、协议速查、构建与验证
 ├── docs/
-│   ├── 技术手册.md            原理与实现细节、参数总表、排障、风险与后续计划
-│   └── AI交接.md              ★ 接手必读：数据怎么读、当前参数、已确认结论、下一步
+│   └── 技术手册.md            ★ 接手必读：原理与实现、参数总表、排障、风险与变更记录
 ├── main.py                   OpenMV 视觉端主程序
 ├── imageio_playback.py       OpenMV 录像回放 / 导出脚本
 ├── tests/
@@ -184,9 +183,9 @@ flags：bit0 视觉链路有效、bit1 目标有效、bit2 IMU 就绪、bit3 握
 
 | 项目 | 状态 | 日期 |
 |---|---|---|
-| Keil 全量编译 | 0 Error / 0 Warning；Code=38844、RO=2768、RW=564、ZI=18620 | 2026-11-11 17:46 |
-| RAM 占用 | 19184 / 20480 B，余量 1296 B | 2026-11-11 |
-| 主机测试 | 14 项全部通过（Python 3.12.14） | 2026-11-03 |
+| Keil 全量编译 | 0 Error / 0 Warning；Code=41724、RO=2768、RW=572、ZI=14316 | 2026-11-21 01:05 |
+| RAM 占用 | **14888 / 20480 B，余量 5592 B（27%）**；FreeRTOS 堆 6144 B、传统堆 0 | 2026-11-21 |
+| 主机测试 | 21 + 5 项全部通过 | 2026-11-21 |
 | 实机验证 | 部分完成：11.11 八发已校核 yaw/roll 自稳与 pitch 补偿；舵机方向、焦距、视觉 PID 仍未确认 | 2026-11-11 |
 
 ### 6.1 11.11 实测记录（八发，`内录/11.11/telem_00009~16`）

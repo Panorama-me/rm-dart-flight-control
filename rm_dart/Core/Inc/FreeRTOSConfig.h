@@ -64,7 +64,10 @@
 #define configTICK_RATE_HZ                       ((TickType_t)1000)
 #define configMAX_PRIORITIES                     ( 56 )
 #define configMINIMAL_STACK_SIZE                 ((uint16_t)128)
-#define configTOTAL_HEAP_SIZE                    ((size_t)10240)
+/* 2026-11-21：10240 -> 6144。全工程只有 3 个 osThreadNew，
+   栈 2048 + 1024 + 512，加 TCB 与块头共约 3.9 kB，原值空了 6 kB。
+   若改回动态对象（队列/信号量/定时器），必须同步上调。 */
+#define configTOTAL_HEAP_SIZE                    ((size_t)6144)
 #define configMAX_TASK_NAME_LEN                  ( 16 )
 #define configUSE_TRACE_FACILITY                 1
 #define configUSE_16_BIT_TICKS                   0

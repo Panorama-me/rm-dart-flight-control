@@ -827,22 +827,14 @@ static void update_vision_filter(float dt, uint32_t now_ms,
                 ((float)DART_VISION_DELAY_MS * 0.001f));
             float los_yaw_deg = wrap_180(lam_now_deg -
                                          (ins_valid ? ins_yaw_deg : 0.0f));
-            float cam_ang_rad = DART_CAMERA_YAW_SIGN *
-                                (los_yaw_deg - DART_CAMERA_YAW_BIAS_DEG) *
-                                DART_DEG_TO_RAD;
 
+            /* 2026-11-21：原先这里把滤波后的角度反投影回像素存进
+               filtered_x/filtered_y，但全工程无人读取，且每 2 ms 周期要跑
+               两次软浮点 tanf（F103 无 FPU）。已删除字段与赋值。 */
             DartControl.telemetry.vision.los_yaw_deg = los_yaw_deg;
-            DartControl.telemetry.vision.filtered_x =
-                center_x + focal_x * tanf(constrain_float(cam_ang_rad, -1.2f, 1.2f));
-            DartControl.telemetry.vision.filtered_y =
-                center_y + focal_y * tanf(DartControl.vision_y_ekf.angle);
         }
 #else
-        /* RAW_RATE 不做位置滤波，省去两次软件 tanf 调用。 */
-        DartControl.telemetry.vision.filtered_x =
-            (float)DartControl.telemetry.vision.raw_x;
-        DartControl.telemetry.vision.filtered_y =
-            (float)DartControl.telemetry.vision.raw_y;
+        /* RAW_RATE 不做位置滤波。2026-11-21 删除 filtered_x/y 的镜像赋值。 */
         DartControl.telemetry.vision.los_yaw_deg =
             DART_CAMERA_YAW_SIGN * DartControl.vision_x_ekf.angle * DART_RAD_TO_DEG +
             DART_CAMERA_YAW_BIAS_DEG;

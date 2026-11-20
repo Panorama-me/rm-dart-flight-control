@@ -442,8 +442,6 @@ typedef struct
 {
     int16_t raw_x;              /* 原始 X 偏移（相对引导中心，像素） */
     int16_t raw_y;              /* 原始 Y 偏移（相对引导中心，像素） */
-    float filtered_x;           /* 滤波后 X 偏移（像素） */
-    float filtered_y;           /* 滤波后 Y 偏移（像素） */
     float los_yaw_deg;          /* 视线偏航角（度） */
     float los_pitch_deg;        /* 视线俯仰角（度） */
     uint32_t last_frame_ms;     /* 最近一帧时间戳 */
