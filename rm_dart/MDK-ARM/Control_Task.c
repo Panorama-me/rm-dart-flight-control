@@ -17,6 +17,8 @@ static float debug_ref_yaw_deg;
 static float debug_ref_pitch_deg;
 static uint32_t debug_imu_ready_ms;
 static uint8_t debug_ref_valid;
+/* ω 低通状态（MODE 1/3 共用）。无目标时清零，避免陈旧值带进下一次视觉。 */
+static float pn_omega_lpf;
 
 /* 握手 ACK 接收缓冲（OpenMV -> F103） */
 static uint8_t ack_buf[DART_ACK_FRAME_LEN];
@@ -1122,6 +1124,7 @@ static void run_descent_guidance(const INS_t *ins)
         !DartControl.telemetry.vision.recognized)
 #endif
     {
+        pn_omega_lpf = 0.0f;   /* 无目标：ω 低通清零，别把陈旧值带回来 */
 #if DART_DESCENT_GLIDE_ENABLE
         /* 无目标/链路中断：滑翔速率环，缓慢拉向基准滑翔角。 */
         if (DART_MODE != DART_MODE_YAW)
@@ -1224,6 +1227,19 @@ static void run_descent_guidance(const INS_t *ins)
     /* PN 用未钳位的角速率：原来的 15 度/秒是给前视项留的，对 PN 太紧。 */
     pn_omega_yaw = constrain_float(camera_yaw_rate,
                                    -DART_PN_RATE_MAX, DART_PN_RATE_MAX);
+
+    /* ω 低通：目标对准时真实 ω 只有 1~2 度/秒，估计噪声却有 7~8。
+       不滤就提增益等于放大噪声，详见 DART_PN_RATE_LPF_RC_S 处的实测表。 */
+    {
+        float rc = DART_PN_RATE_LPF_RC_S;
+        float alpha = (rc > 0.0f)
+                      ? ((DART_CONTROL_PERIOD_MS * 0.001f) /
+                         (rc + (DART_CONTROL_PERIOD_MS * 0.001f)))
+                      : 1.0f;
+
+        pn_omega_lpf += alpha * (pn_omega_yaw - pn_omega_lpf);
+        pn_omega_yaw = pn_omega_lpf;
+    }
     camera_yaw_rate = constrain_float(camera_yaw_rate,
                                       -DART_LOS_RATE_LIMIT_DEG_S,
                                       DART_LOS_RATE_LIMIT_DEG_S);

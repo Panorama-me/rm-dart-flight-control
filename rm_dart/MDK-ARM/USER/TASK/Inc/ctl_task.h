@@ -187,8 +187,8 @@ extern "C" {
    两者都指向 480 附近，与 W=1280 的理论值吻合。
 
    两轴必须相等，否则 roll 旋转后的指令会出现各向异性（见 9.x）。 */
-#define DART_CAMERA_FOCAL_X_PX                480.0f
-#define DART_CAMERA_FOCAL_Y_PX                480.0f
+#define DART_CAMERA_FOCAL_X_PX                960.0f
+#define DART_CAMERA_FOCAL_Y_PX                960.0f
 /* 相机安装角与读出窗口偏移造成的固定视线偏置（度），默认 0。
    当前 640x480 窗口在垂直方向相对光轴偏移约 20 度；
    若机身轴对准目标时图像不在 (160,120)，把实测偏置填到这里。 */
@@ -284,7 +284,7 @@ extern "C" {
 /* 阶段1：pitch 尚未低于目标角时输出固定抬升量，抵消发射低头。
    阶段2：角度低于目标后按 LIFT_PID / LIFT_BANG 各自的策略回目标角。
    阶段3：到达目标或进入下降段即停止补偿。 */
-#define DART_ASCENT_PITCH_LIFT_US             100.0f               /* 阶段1 固定抬升输出（微秒）；对齐 11.12-15 实测 */
+#define DART_ASCENT_PITCH_LIFT_US             150.0f               /* 阶段1 固定抬升输出（微秒）；对齐 11.12-15 实测 */
 /* 11.12 全部 14 发可见阶段1=≈100us、阶段2=≈110us，切换点无一例外落在 pitch 穿过 30° 时。
    11.11 那批是 LIFT=130 / PULL=100，与 git 基线一致，说明中途改过一次且未提交。 */
 
@@ -327,7 +327,7 @@ extern "C" {
 
 /* 视觉段（有目标）：比滑翔段更激进，GAIN 8.0 对应时间常数约 0.125 s。
    与滑翔段共用同一个速率环，但增益和限幅独立——改一段不影响另一段。 */
-#define DART_VISION_PITCH_RATE_GAIN           6.0f     /* 视觉指令 -> 目标角速率（1/秒）；2026-11-16 由 8 降 */
+#define DART_VISION_PITCH_RATE_GAIN           8.0f     /* 视觉指令 -> 目标角速率（1/秒）；2026-11-16 由 8 降 */
 #define DART_VISION_PITCH_MAX_RATE          80.0f     /* 视觉段最大低头速率（度/秒） */
 
 /* 速率环增益（微秒 / (度/秒)），两段共用。 */
@@ -487,20 +487,20 @@ extern "C" {
    3) 加速度计 MotionAccel_b 在下降段只有 1.5~2.1 米/秒^2（协调转弯应 6~13），
       加速度内环等于用不可靠信号做反馈。
    代码与参数全部保留，改回 1 或 2 即可重新启用，但启用前必须先解决上面三条。 */
-#define DART_YAW_PN_MODE                         2
+#define DART_YAW_PN_MODE                         3
 #define DART_PN_N                                3.0f   /* 比例导引系数，2~5 */
 /* PN 方向符号：+1 = 视线角速率与 yaw 指令同号。台架上「目标向左移动时
    yaw_u 应为负（左转）」若相反，把这个改成 -1.0f 即可，不用改公式。 */
-#define DART_PN_SIGN                             1.0f
+#define DART_PN_SIGN                             -1.0f
 #define DART_PN_RATE_MAX                        90.0f   /* 速率指令限幅（度/秒） */
 #define DART_PN_V_NOM                           22.0f   /* 标称地速（米/秒），只用于把转速换成加速度 */
-#define DART_PN_K_RATE                           6.0f   /* 速率环增益（微秒 / (度/秒)）；2026-11-18 由 4 调到 6：11.18 反推机体 G=0.25 度/秒/微秒，K=4 时有效 N 只剩 1.5 追得慢，6 是脱靶与振动的折中 */
+#define DART_PN_K_RATE                           12.0f   /* 速率环增益（微秒 / (度/秒)）；2026-11-18 由 4 调到 6：11.18 反推机体 G=0.25 度/秒/微秒，K=4 时有效 N 只剩 1.5 追得慢，6 是脱靶与振动的折中 */
 
 #define DART_ACCEL_YAW_AXIS                        1   /* MotionAccel_b 里对应偏航侧向力的轴 */
 #define DART_ACCEL_YAW_SIGN                      1.0f  /* 台架确认！错了就是正反馈 */
 /* 加速度环增益（微秒 / (米/秒^2)）。2026-11-19 由 14 降到 4。
    14 的等效速率增益是 K_A*V=308 微秒/(rad/s)=5.4 微秒/(度/秒)，与 K_RATE=6 叠加后
-   内环把每个噪声尖峰都放大成满舵。仿真 K_A=3~4 时舵偏 16~25 微秒、摆幅 5 度、
+-   内环把每个噪声尖峰都放大成满舵。仿真 K_A=3~4 时舵偏 16~25 微秒、摆幅 5 度、
    +-3 度停留 0.21 秒，全面优于原 PID（21 微秒 / 6.7 度 / 0.19 秒）。
    4 的等效速率增益 88 微秒/(rad/s)=1.5 微秒/(度/秒)：内环只管补力，不抢速率环的活。 */
 #define DART_ACCEL_K_A                           4.0f
@@ -534,9 +534,22 @@ extern "C" {
 /* ---------------------- 纯 PN（MODE 3）----------------------------------
    直接用视线角速率给舵，另加陀螺阻尼。阻尼不能省：omega 来自 26 fps 帧间
    差分，11.19 数据里 7.6% 的帧是识别跳变，无阻尼时一帧跳变就是一个满舵脉冲。 */
-#define DART_PN_PURE_K                          6.0f   /* 微秒 / (度/秒)，与 K_RATE 同量级 */
+#define DART_PN_PURE_K                          22.0f   /* 微秒 / (度/秒)；2026-11-20 由 6 提高，见下方 ω 低通说明 */
 #define DART_PN_PURE_KD                         2.0f   /* 陀螺阻尼，微秒 / (度/秒) */
-#define DART_PITCH_VISION_KP                     20.0f
+
+/* ---------------------------------- ω 低通（MODE 1 / 3）----------------------
+   为什么需要：目标接近对准时真实 ω 只有 1~2 度/秒，而估计噪声有 7~8 度/秒。
+   PN 的导向输出 = K*N*ω，不先降噪就提增益，噪声会直接顶满舵。
+   15 发实测（26~31 fps，ω 原始 sd 7.7 度/秒）：
+     RC   0 ms -> sd 7.7      RC  50 ms -> 3.2      RC 120 ms -> 1.7
+     RC 200 ms -> sd 1.1      RC 300 ms -> 0.8
+   当前 K*N = 22*3 = 66：RC=200 ms 时 1.5 度/秒 给 99 微秒、噪声抖动 75 微秒，
+   信噪比约 1.3（RC=120 ms 只有 0.9，RC=50 ms 只有 0.5）。
+   代价：相位滞后约等于 RC，叠加视觉 130 ms 后总延迟约 330 ms，1.2 秒窗口内
+   必然超调——这是为了「消除 1~2 度/秒 的残余速率」主动换来的，不要当成振荡去调。
+   设 0 = 关闭低通。 */
+#define DART_PN_RATE_LPF_RC_S                   0.20f
+#define DART_PITCH_VISION_KP                     26.0f
 #define DART_PITCH_VISION_KI                     0.00f
 #define DART_PITCH_VISION_KD                     3.00f
 
@@ -548,7 +561,7 @@ extern "C" {
 #define DART_PITCH_MODE_LIFT_PID                1U
 #define DART_PITCH_MODE_LIFT_BANG               2U
 #ifndef DART_ASCENT_PITCH_MODE
-#define DART_ASCENT_PITCH_MODE                  DART_PITCH_MODE_LIFT_BANG
+#define DART_ASCENT_PITCH_MODE                  DART_PITCH_MODE_LIFT_PID
 #endif
 /* 阶段2 参数。PULL_US 仅 LIFT_BANG 使用；STOP_DEG 两种策略共用：
    LIFT_BANG 拿它当固定抬头的终止角，LIFT_PID 拿它当停止判据与速率环的角度基准。
