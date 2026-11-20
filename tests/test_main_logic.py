@@ -195,8 +195,8 @@ class MainLogicTest(unittest.TestCase):
     def test_largest_blob_is_selected(self):
         ns, _, _ = load_logic()
         class Frame:
-            def find_blobs(self, thresholds, roi):
-                self.args = (thresholds, roi)
+            def find_blobs(self, thresholds, roi, **kwargs):
+                self.args = (thresholds, roi, kwargs)
                 return [types.SimpleNamespace(rect=(2, 3, 4, 5)),
                         types.SimpleNamespace(rect=(8, 9, 10, 11))]
         img = Frame()
@@ -204,6 +204,11 @@ class MainLogicTest(unittest.TestCase):
         self.assertEqual((found, selected.x, selected.y, selected.w, selected.h),
                          (1, 8, 9, 10, 11))
         self.assertEqual(img.args[0], ns["THRESHOLDS1"])
+        self.assertEqual(img.args[2], {"x_stride": 2, "y_stride": 2})
+
+        # 锁定小 ROI 必须保持全精度（不传 y_stride=2）
+        ns["find_max_blob"](img, (100, 80, 90, 90))
+        self.assertEqual(img.args[2], {})
 
     def test_ypr_changes_on_each_valid_frame(self):
         ns, fake_time, uart = load_logic()

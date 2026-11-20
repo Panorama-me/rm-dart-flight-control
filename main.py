@@ -55,11 +55,10 @@ RECORD_JPEG_QUALITY = 60
 # 代价：视频 160x120，叠加层文字会糊——遥测 CSV 里有完整数据，不影响事后分析。
 # 想看 320x240 就把这里改回 1，但要接受随时可能降级成 .bin。
 RECORD_POOL_DIV = 2
-# 0: write every captured frame; >0: minimum interval.
-# 取 33 而不是 50：实际间隔是 ceil(INTERVAL/主循环周期)*周期，主循环波动时
-# 50 会跨三档导致帧数漂移，33 落到两帧一录更稳定。
-# MJPEG 下单帧只有 5~8 KB，写卡不再是瓶颈，这个间隔实际决定了录像帧率上限（30 fps）。
-RECORD_INTERVAL_MS = 33
+# 隔帧录像（2026-11-20 由 33 调至 66）：15 fps 录像足够轨迹复盘，
+# 一半的帧跳过 mean_pool + JPEG 编码 + 写卡，把主循环帧率从 ~26 fps 提到 ~33 fps，
+# 同步降低视觉帧间隔与控制延迟；遥测 CSV 仍保持满 50 Hz。
+RECORD_INTERVAL_MS = 66
 RECORD_SYNC_MS = 1000
 TELEM_TIMEOUT_MS = 300
 TELEM_LOG_ENABLE = True
@@ -567,13 +566,10 @@ def send_no_target():
 # =========================
 # 时间域中值滤波
 # =========================
-# 窗口 3 帧（2026-11-18 由 5 降）。这块是相机侧延迟的最大单项：
-#   5 帧 @20 fps = 250 ms 历史窗口，群延迟约 2 帧 = 100 ms；
-#   3 帧 @20 fps = 150 ms 历史窗口，群延迟约 1 帧 = 50 ms。
-# 回路总延迟 330 -> 280 ms，视觉 yaw 的 G*T 从 1.25 降到 1.06（边界 1.57），
-# 离稳定边界更远，摆幅和周期都会降。代价：跳点抑制变弱，噪声多约 30%，
-# 对静止靶标无影响（中值只作用在 cx/cy 上，不改变识别）。
-MED_WIN = 3
+# 窗口 1 帧（2026-11-20 由 3 降为 1，旁路中值滤波）：
+# 3 帧中值对运动目标白加 1 整帧纯群延迟（26~31 fps 下 32~38 ms）；
+# 下位机已切至方案 A 惯性系 KF（带 ±6° 创新量门限），单帧跳变由 STM32 门限接管。
+MED_WIN = 1
 cx_hist = []
 cy_hist = []
 
@@ -1052,7 +1048,11 @@ def find_max_blob(img, roi):
     cnt = 0
     found_flag = 0
 
-    blobs = img.find_blobs([THRESHOLDS1[0]], roi=roi)
+    if roi == INIT_ROI:
+        # 脱锁全图重搜用 y_stride=2 加速；锁定后小 ROI 保持默认 y_stride=1 保证质心精度
+        blobs = img.find_blobs([THRESHOLDS1[0]], roi=roi, x_stride=2, y_stride=2)
+    else:
+        blobs = img.find_blobs([THRESHOLDS1[0]], roi=roi)
 
     for blob in blobs:
         rect = blob.rect
@@ -1094,6 +1094,14 @@ def draw_overlay(img, blob, found_flag, cur_roi, fps, t_ms,
                  file_name, rx_frames):
 
     if OVERLAY_LEVEL <= 0:
+        return
+
+    # 飞行态（LAUNCHED..DESCENT）且精简模式：只画目标红框、跳过所有文字格式化与绘制，
+    # 省约 2~3 ms/帧并减少堆分配；池化后文字本就模糊，完整数据全在遥测 CSV 里。
+    if OVERLAY_LEVEL < 2 and (STATE_LAUNCHED <= state <= STATE_DESCENT):
+        if found_flag == 1:
+            img.draw_rectangle((blob.x, blob.y, blob.w, blob.h),
+                               color=(255, 0, 0))
         return
 
     if found_flag == 1:
@@ -1286,8 +1294,11 @@ try:
         # 录当前帧（在绘制之后，视频里带叠加信息）
         update_recording(img)
 
+        # 飞行态暂停定时 GC，消除飞行中每 20 帧一次的 10~20 ms 卡顿毛刺；
+        # update_recording() 里的 JPEG_MIN_FREE_BYTES 仍作低堆兜底，落地后立刻恢复回收。
+        in_flight = (STATE_LAUNCHED <= telem_state <= STATE_DESCENT)
         gc_counter += 1
-        if gc_counter >= GC_COLLECT_INTERVAL:
+        if (not in_flight) and gc_counter >= GC_COLLECT_INTERVAL:
             gc.enable()
             gc.collect()
             gc.disable()

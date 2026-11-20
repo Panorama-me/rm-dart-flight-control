@@ -56,18 +56,10 @@ extern "C" {
 #define DART_VISION_CRC8_POLY               0x8CU                   /* CRC8 多项式 */
 
 /* ---------------------------- 姿态遥测协议 ----------------------------- */
-/* 姿态遥测 UART 协议（F103 -> OpenMV），帧格式：
-   55
-      gyroXH gyroXL gyroYH gyroYL gyroZH gyroZL
-      pitchH pitchL yawH yawL rollH rollL
-      outPitchH outPitchL outYawH outYawL outRollH outRollL
-      mode state flags
-      losYawH losYawL losPitchH losPitchL
-      servo1H servo1L servo2H servo2L servo3H servo3L servo4H servo4L
-      dbgFlags FE CRC8
-   gyro 单位 0.1 deg/s，角度单位 0.01 deg；
-   LOS 为相对上电 1 s 参考角的增量（0.01 deg），舵机角 0.1 deg；
-   CRC 覆盖字节 0..35。 */
+/* 姿态遥测 UART 协议（F103 -> OpenMV，49 字节大端）：
+   55 gyro(6) att(6) out(6) mode state flags los(4) servo(8) dbgFlags
+      dpsi(2) a_cmd(2) aoa(2) vis_rate(2) vis_x(2) vis_y(2) FE CRC8
+   gyro 0.1 deg/s，角度/LOS/速率 0.01，舵机角 0.1 deg；CRC 覆盖 0..47。 */
 #define DART_ATT_FRAME_LEN                    49U
 #define DART_ATT_SOF_INDEX                     0U
 #define DART_ATT_GYRO_X_H_INDEX                1U
@@ -130,17 +122,14 @@ extern "C" {
 #define DART_ATT_SERVO_SCALE                10.0f   /* 舵机角 0.1 度 */
 #define DART_ATT_ACCEL_SCALE               100.0f   /* 加速度 0.01 m/s^2 */
 #define DART_ATT_RATE_SCALE                100.0f   /* 角速率 0.01 度/秒 */
-#define DART_ATT_US_SCALE                    1.0f   /* 舵面输出 1 微秒 */
-#define DART_ATT_SERVO_DEG_PER_US           0.09f   /* 1550 us = 0 度，±1000 us = ±90 度 */
+#define DART_ATT_SERVO_DEG_PER_US           0.09f   /* 1550 us = 0 度，+-1000 us = +-90 度 */
 #define DART_DBG_FLAG_REF_VALID             0x01U   /* 调试标志 bit0：上电参考角已捕获 */
 #define DART_ATT_FLAG_LINK_VALID            0x01U
 #define DART_ATT_FLAG_TARGET_VALID          0x02U
 #define DART_ATT_FLAG_IMU_READY             0x04U
 #define DART_ATT_FLAG_HANDSHAKE_DONE        0x08U
 #define DART_ATT_FLAG_OUTPUT_VALID          0x10U
-/* 固件版本标记（2026-11-18 22:39 起置位）：本版把制导调试量改成每周期更新，
-   地面/DEBUG 态也能看到。上位机看到 flags 含 0x40 才说明烧的是这一版。 */
-#define DART_ATT_FLAG_DBG_ALWAYS_ON         0x40U
+#define DART_ATT_FLAG_DBG_ALWAYS_ON         0x40U   /* 制导调试量每周期更新标记 */
 #define DART_ATT_TX_TIMEOUT_MS                 5U
 
 /* ------------------------- 握手 / 模式协议 ----------------------------- */
@@ -156,42 +145,20 @@ extern "C" {
 #define DART_RESET_SOF                      0x5BU
 #define DART_RESET_FRAME_LEN                   4U
 
-/* 模式：由下位机编译期决定，握手帧携带给 OpenMV。
-   default 与 both 当前功能一致（测试/比赛区别的标记）。 */
-#define DART_MODE_DEFAULT                     0U
+/* 工作模式（编译期选择，握手帧通知 OpenMV；0 保留未用） */
 #define DART_MODE_PITCH                       1U
 #define DART_MODE_YAW                         2U
 #define DART_MODE_BOTH                        3U
-#define DART_MODE_DEBUG                       4U
-/* 编译期选择工作模式；台架调试时改成 DART_MODE_DEBUG：
-   不检测起飞、不驱动舵机，只识别目标并计算/上报视觉指令。 */
-#define DART_MODE                            DART_MODE_BOTH   /* 两轴制导（正常飞行配置） */
+#define DART_MODE_DEBUG                       4U   /* 台架调试：不检起飞、不驱舵机，仅上报指令 */
+#define DART_MODE                            DART_MODE_BOTH
 
-#define DART_IMAGE_WIDTH_PX                  320.0f    /* OpenMV 输出=- QVGA，宽度 320 */
-#define DART_IMAGE_HEIGHT_PX                 240.0f    /* OpenMV 输出 QVGA，高度 240 */
-/* 视觉焦距（像素）。OV5640 全幅 2592x1944、水平 68°：
-   f_sensor = 1296/tan(34°) = 1921 px。
-   读出窗口 W 缩放到 320x240 输出后 f_out = 1921 * 320 / W：
-     W = 640  -> f = 961，视场 18.9 x 14.2 度（旧的 (0,700,640,480) 窗口）
-     W = 1280 -> f = 480，视场 36.9 x 28.1 度（当前 (0,0,1280,960) 窗口）
-
-   **11.15 起 READOUT_ROI 改成 (0,0,1280,960) 后，IOCTL 真正生效了**，
-   视场翻倍，f 必须跟着改成 480。用 961 会让上报角度只有真值的一半，
-   视觉环等效增益也减半——表现为「机头转的角度是显示值的两倍」。
-
-   两路独立实测（11.15 的 00015~00017）：
-   1) 录像法：rec_00017 六个带 Found 的帧，画面 X 对 yaw 回归得 8.92 px/度，
-      f = 8.92 * 57.3 = 511；
-   2) 遥测法：目标静止时 d(相对LOS)/d(yaw) = f_true/f_code，
-      t=1.32->1.78 区间斜率 -0.50，f_true = 0.50 * 961 = 480。
-   两者都指向 480 附近，与 W=1280 的理论值吻合。
-
-   两轴必须相等，否则 roll 旋转后的指令会出现各向异性（见 9.x）。 */
+#define DART_IMAGE_WIDTH_PX                  320.0f    /* OpenMV 输出 QVGA 宽度 */
+#define DART_IMAGE_HEIGHT_PX                 240.0f    /* OpenMV 输出 QVGA 高度 */
+/* 等效焦距（像素）：f_out = 1921 * 320 / W（W=640 -> 960, W=1280 -> 480）。
+   两轴必须相等，避免 roll 旋转后各向异性。 */
 #define DART_CAMERA_FOCAL_X_PX                960.0f
 #define DART_CAMERA_FOCAL_Y_PX                960.0f
-/* 相机安装角与读出窗口偏移造成的固定视线偏置（度），默认 0。
-   当前 640x480 窗口在垂直方向相对光轴偏移约 20 度；
-   若机身轴对准目标时图像不在 (160,120)，把实测偏置填到这里。 */
+/* 相机安装固定视线偏置（度），默认 0 */
 #define DART_CAMERA_YAW_BIAS_DEG               0.0f
 #define DART_CAMERA_PITCH_BIAS_DEG             0.0f
 #define DART_VISION_LINK_TIMEOUT_MS           250U                  /* 视觉链路超时时间（毫秒） */
@@ -212,43 +179,28 @@ extern "C" {
 #error "DART_DESCENT_LOCK_LAST_VISUAL_COMMAND_ENABLE must be 0 or 1"
 #endif
 
-/* 视觉 EKF 调参 */
-/* 2026-11-19 重调（原 Q=5 / R=9 / GATE=180，是 640x480 全窗口时代的标定）。
-   当前 ROI 半宽只有几十像素，180 像素的门限等于不设门，什么跳变都放进来；
-   R 相对 Q 太小时增益过高，rate 跟着单帧噪声跳。
-   R=25 压像素噪声，GATE=40 只挡真跳变。
-   2026-11-20：切到 EKF，并把 Q 从 2 提到 300。
-   原因：Q=2 噪声极低（0.4 度/秒），但 1 Hz 处相位滞后 325 ms、幅值只剩 28%，
-   等于给控制回路白加 300 ms 延迟。实际帧率是 31 fps（rel 阶跃中位间隔 32 ms，
-   与录像帧数互校），早期按 26 fps 估的，现已修正。
-   Q=300 的权衡：噪声 2.3 度/秒、1 Hz 滞后 84 ms、幅值保真 93%。
-   对比 RAW_RATE（噪声 12.4、滞后 13 ms）：延迟多 70 ms，换噪声降 5 倍。
-   滤波器的「噪声 x 延迟」近似恒定，没有免费降噪；Q=2 那组乘积虽小，
-   但它把延迟堆到了控制无法接受的水平。 */
-#define DART_VISION_EKF_PROCESS_NOISE        300.0f                 /* 过程噪声强度 */
-#define DART_VISION_EKF_MEAS_NOISE_PX         25.0f                 /* 测量噪声方差（像素平方） */
-#define DART_VISION_EKF_GATE_PX               40.0f                 /* 创新量限幅门限（像素） */
+/* 视觉滤波：pitch 走像素 EKF，yaw 走延迟对齐惯性系线性 KF（方案 A） */
+#define DART_VISION_EKF_PROCESS_NOISE        300.0f                 /* pitch EKF 过程噪声（Q=300 兼顾噪声与相位滞后） */
+#define DART_VISION_EKF_MEAS_NOISE_PX         25.0f                 /* pitch EKF 量测方差（px^2） */
+#define DART_VISION_EKF_GATE_PX               40.0f                 /* pitch EKF 创新门限（px） */
+/* 方案 A：量测进 KF 前用 yaw(t - DELAY) 抵消机身转动，消除 gz 泄漏；
+   台架快甩机头观察 vis_rate_dps 贴零程度微调 DELAY_MS（MED_WIN=1 约 30 ms）。 */
+#define DART_VISION_DELAY_MS                  30U                   /* 视觉链路延迟补偿（毫秒） */
+#define DART_YAW_HIST_LEN                     64U                   /* yaw 历史环形缓冲（2 ms * 64 = 128 ms） */
+#define DART_VISION_INERT_Q                  200.0f                 /* 惯性系 yaw KF 过程噪声 ((度/秒)^2/秒) */
+#define DART_VISION_INERT_R_DEG2               0.25f                /* 惯性系 yaw KF 量测方差（度^2，约 0.5 度） */
+#define DART_VISION_INERT_GATE_DEG             6.0f                 /* 惯性系创新门限（度） */
 
-/* 原视觉 EKF 仍保留在 Control_Task.c 中，修改本编译期开关即可恢复；
-   RAW_RATE 模式不对位置滤波，只对视线角速率做轻量低通。 */
+/* 视觉滤波模式：0 = EKF/方案 A（默认），1 = RAW_RATE（备用帧间差分） */
 #define DART_VISION_FILTER_EKF                  0U
 #define DART_VISION_FILTER_RAW_RATE             1U
 #ifndef DART_VISION_FILTER_MODE
 #define DART_VISION_FILTER_MODE                 DART_VISION_FILTER_EKF
 #endif
-/* 视线角速率低通时间常数（秒）。2026-11-19 由 0.055 降到 0.015。
-   0.055 在 20 fps 下等效滞后 80~150 毫秒，使 pn_omega 的相位落在机体转动之后：
-   实飞 11.19-00006 第 19.04 帧真实视线角速率约 +49 度/秒、遥测算出 -24 度/秒，
-   符号都是反的，PN 于是变成追自己机头转速的正反馈。
-   0.015 约为帧周期的三分之一：只压像素抖动，不压真实速率。 */
-#define DART_VISION_RATE_LPF_RC_S               0.015f
+#define DART_VISION_RATE_LPF_RC_S               0.015f /* RAW_RATE 低通时间常数（秒，约 1/3 帧周期） */
 #define DART_VISION_RATE_MIN_DT_MS              5U
 #define DART_VISION_RATE_MAX_DT_MS              100U
-/* 帧间角速率硬限幅（度/秒）。2026-11-19 由 360 降到 90。
-   360 是一条像素跳变专用通道：识别框抖一帧就能伪造 300 度/秒，PN 立刻满舵打一下。
-   真实视线角速率上限约 60 度/秒（目标横穿叠加机头转动），90 留 50% 余量，
-   同时与 DART_PN_RATE_MAX 对齐。 */
-#define DART_VISION_RAW_RATE_LIMIT_DEG_S         90.0f
+#define DART_VISION_RAW_RATE_LIMIT_DEG_S         90.0f /* RAW_RATE 帧间速率限幅（度/秒），防框跳变 */
 #define DART_VISION_RATE_LOST_DECAY             0.5f   /* 丢帧时速率保留系数，每丢一帧乘一次 */
 #define DART_VISION_RATE_LOST_FLOOR_DEG_S       1.0f   /* 衰减到此值以下直接归零（度/秒） */
 
@@ -280,64 +232,29 @@ extern "C" {
 #define DART_LAUNCH_CONFIRM_COUNT                5U                  /* 连续超过阈值次数确认起飞 */
 
 /* ------------------------------ 上升段 ---------------------------------- */
-#define DART_ASCENT_PITCH_TARGET_DEG          (23.0f)               /* 阶段1/2 分界角：pitch 跌破此值转入阶段2 */
-/* 阶段1：pitch 尚未低于目标角时输出固定抬升量，抵消发射低头。
-   阶段2：角度低于目标后按 LIFT_PID / LIFT_BANG 各自的策略回目标角。
-   阶段3：到达目标或进入下降段即停止补偿。 */
-#define DART_ASCENT_PITCH_LIFT_US             150.0f               /* 阶段1 固定抬升输出（微秒）；对齐 11.12-15 实测 */
-/* 11.12 全部 14 发可见阶段1=≈100us、阶段2=≈110us，切换点无一例外落在 pitch 穿过 30° 时。
-   11.11 那批是 LIFT=130 / PULL=100，与 git 基线一致，说明中途改过一次且未提交。 */
+/* 阶段1：pitch >= TARGET 时固定抬升；阶段2：跌破后按 LIFT_PID/LIFT_BANG 回目标角；到达即停。 */
+#define DART_ASCENT_PITCH_TARGET_DEG          (23.0f)               /* 阶段1/2 分界角（度） */
+#define DART_ASCENT_PITCH_LIFT_US             150.0f                /* 阶段1 固定抬升输出（微秒） */
 
 /* ------------------------------ 下降段 ---------------------------------- */
-#define DART_DESCENT_PITCH_THRESHOLD_DEG      (5.0f)                 /* 取反后的俯仰角低于此值判断进入下降段（度） */
-#define DART_DESCENT_CONFIRM_COUNT               25U                 /* 连续满足下降条件次数确认进入下降 */
-/* 滑翔总开关：下降段无目标时启用滑翔速率环（见 DART_GLIDE_* 参数）。 */
-#define DART_DESCENT_GLIDE_ENABLE                1U
-/* 脱锁航向锁定：跟踪期间记录「目标最居中时的机体 yaw」，脱锁后以该角为目标。
-   判据是 |视线偏航角| 变小：越接近 0 说明目标越靠近画面中心，此时的 yaw 就是目标方位。
-   只记录 yaw、不参与视线角的加减，因此不存在符号歧义。
-   1 = 启用（0则保持原行为：脱锁后回发射航向）。 */
-#define DART_YAW_ABS_LOCK_ENABLE                 0U
-/* 更新最佳航向需要的改进量（度）。防止噪声尖峰把锁定角钉在错误位置：
-   只有 |视线角| 比历史最优值再小 0.15 度才更新。 */
-#define DART_YAW_BEST_MARGIN_DEG                0.15f
-/* 最佳航向跟踪开关，独立于 DART_YAW_ABS_LOCK_ENABLE：
-   后者只管「脱锁后是否按最佳航向保持」，本开关只管「是否记录最佳航向」。
-   拆开是为了让攻角增益能用到 best 角，又不改变脱锁行为。 */
+#define DART_DESCENT_PITCH_THRESHOLD_DEG      (5.0f)                /* 俯仰角低于此值判入下降段（度） */
+#define DART_DESCENT_CONFIRM_COUNT               25U                /* 连续满足次数确认进入下降 */
+#define DART_DESCENT_GLIDE_ENABLE                1U                 /* 无目标时启用滑翔速率环 */
+#define DART_YAW_ABS_LOCK_ENABLE                 0U                 /* 1=脱锁保持最佳航向，0=回发射航向 */
+#define DART_YAW_BEST_MARGIN_DEG                0.15f               /* 刷新最佳航向所需 |LOS| 改进量（度） */
 #ifndef DART_YAW_BEST_TRACK_ENABLE
-#define DART_YAW_BEST_TRACK_ENABLE               1U
+#define DART_YAW_BEST_TRACK_ENABLE               1U                 /* 独立于 ABS_LOCK：跟踪记录最佳航向 */
 #endif
-#define DART_YAW_BEST_CONFIRM_FRAMES             2U   /* 连续两帧都比历史最优更小才更新，防单帧识别跳变 */
-/* 脱锁判据：连续丢失的视觉帧数达到此值即切脱锁锁定，不再等
-   DART_TARGET_LOST_HOLD_MS 的 120 ms 超时。按 26 fps 算：
-   2 帧 ≈ 77 ms；调成 1 则丢一帧就切（约 38 ms）。+
-	 
-   注意：帧数按视觉帧累计，不是 2 ms 的控制周期。 */
-#define DART_DESCENT_UNLOCK_LOST_FRAMES          2U
-/* 滑翔速率环：不直接给目标角，而是控制「低头速率」，让 pitch 缓慢逼近基准角。
-   期望速率 = GAIN × (当前角 - 目标角)，限幅 ±MAX_RATE；
-   舵面 = RATE_KD × (期望速率 - 实际速率)。
-   接近目标时速率自动减小，到达即稳定（gyro ≈ 0），不会过冲。 */
+#define DART_YAW_BEST_CONFIRM_FRAMES             2U                 /* 连续改善帧数门限，防单帧跳变 */
+#define DART_DESCENT_UNLOCK_LOST_FRAMES          2U                 /* 连续丢视觉帧达此值即脱锁（约 60 ms） */
+/* 俯仰速率环（滑翔/视觉共用）：rate_cmd = clamp(GAIN * (pitch - target)), out = KD * (rate_cmd - gy) */
 #define DART_GLIDE_PITCH_DEG                (-45.0f)   /* 基准滑翔俯仰角（度） */
-
-/* 滑翔段（无目标）：把机头拉向基准滑翔角，GAIN 5.0 对应时间常数约 0.2 s。
-   有了下面的输出限幅兜底，滑翔段不会再把舵面推进力矩反转区。 */
-#define DART_GLIDE_RATE_GAIN                  5.0f     /* 每度偏差对应的目标角速率（1/秒） */
-#define DART_GLIDE_MAX_RATE                  80.0f     /* 最大低头速率（度/秒） */
-
-/* 视觉段（有目标）：比滑翔段更激进，GAIN 8.0 对应时间常数约 0.125 s。
-   与滑翔段共用同一个速率环，但增益和限幅独立——改一段不影响另一段。 */
-#define DART_VISION_PITCH_RATE_GAIN           8.0f     /* 视觉指令 -> 目标角速率（1/秒）；2026-11-16 由 8 降 */
+#define DART_GLIDE_RATE_GAIN                  5.0f     /* 滑翔段角度->速率增益（1/秒） */
+#define DART_GLIDE_MAX_RATE                  80.0f     /* 滑翔段最大低头速率（度/秒） */
+#define DART_VISION_PITCH_RATE_GAIN           8.0f     /* 视觉段角度->速率增益（1/秒） */
 #define DART_VISION_PITCH_MAX_RATE          80.0f     /* 视觉段最大低头速率（度/秒） */
-
-/* 速率环增益（微秒 / (度/秒)），两段共用。 */
-#define DART_GLIDE_RATE_KD                    2.5f
-
-/* 舵面输出限幅，两段共用，两侧不对称。
-   低头侧：11.14 实测俯仰通道超过约 17 度后力矩反转——00012 推到 -22.1 度，
-     机头反而从 -20 抬到 -17，卡住下不去。150 us = 13.5 度，留 3 度余量。
-   抬头侧：刹车要靠大偏度，实测 +24 度（00005）仍然正常，不跟着收紧，
-     只防极端值。 */
+#define DART_GLIDE_RATE_KD                    2.5f     /* 俯仰速率环增益（微秒/(度/秒)） */
+/* 不对称限幅：低头侧实测 >17 度力矩反转，150 us=13.5 度留余量；抬头侧刹车允许至 250 us */
 #define DART_GLIDE_MAX_OUTPUT_DOWN_US       150.0f   /* 低头侧限幅（微秒） */
 #define DART_GLIDE_MAX_OUTPUT_UP_US         250.0f   /* 抬头侧限幅（微秒） */
 
@@ -360,25 +277,9 @@ extern "C" {
 #define DART_LEAD_MAX_DEG                  3.0f   /* 前视项单独限幅（度）；= LEAD_TIME*LOS_RATE_LIMIT，两者同时卡住 */
 #define DART_LEAD_RATE_DEADBAND_DEG_S      1.0f   /* 视线角速率死区（度/秒），抑制画面噪声引起的抖动 */
 #define DART_LOS_RATE_LIMIT_DEG_S         15.0f   /* 视线角速率限幅（度/秒）；与 LEAD_TIME 相乘应略小于 LEAD_MAX */
-/* 总指令限幅（度），必须小于半视场。11.15 起读出窗口 1280x960，半视场是 18.45 度，
-   10 是旧 18.9 度视场（半视场 9.45）留下的值，末段会把指令压掉四成。
-
-   11.15 的 00034/00035 实测：末段目标以 38~58 度/秒扫出画面，
-   偏到 14.7~17.2 度时丢目标转滑翔。而指令被压在 10 度，
-   P 项只给 0.09*20*10 = 18 度舵面，按被控对象增益约 2.0 折算只有 36 度/秒转向能力，
-   追不上 38~58 度/秒的扫出——**不是没对准，是给不出足够的角速度**。
-   放到 15 度：舵面 27 度，转向能力约 54 度/秒，够用；仍小于半视场 18.45，安全。
-
-   注意这个限幅只在 |指令|>10 时才起作用，中段正常跟踪（2~8 度）完全不受影响。 */
+/* yaw 总指令限幅（度）：需小于半视场（18.45 度），15 度可覆盖末段高速扫出 */
 #define DART_LEAD_COMMAND_LIMIT_DEG       15.0f
-
-/* pitch 指令单独限幅（2026-11-16 新增）。yaw 需要 15 度才追得上末段扫出，
-   pitch 不需要：俯仰指令要经速率环乘 VISION_PITCH_RATE_GAIN=5 变成期望低头速率，
-   15 度就是 75 度/秒，舵面打满也只能稳定输出约 100 度/秒，超出部分是空转。
-   11.15 全部 754 个视觉帧的 |指令| 分布：p50 5.5 度、p90 9.8 度、p95 10.0 度、
-   p99 14.2 度、max 15.0 度（00038 有 17% 帧打满 15）。收到 10 度只影响这些
-   极端帧，峰值速率需求从 75 降到 50 度/秒，而目标相对视线率中位 30 度/秒，
-   仍有 1.7 倍余量。 */
+/* pitch 指令单独限幅（度）：经速率环已足够覆盖目标相对视线率，防止极端帧过驱 */
 #define DART_PITCH_COMMAND_LIMIT_DEG      10.0f
 
 /* 下降段引导输出反向力矩：只影响 DESCENT 的 pitch PID 输出。
@@ -390,32 +291,26 @@ extern "C" {
 #define DART_PID_MAX_OUTPUT_US                  420.0f               /* PID 输出限幅（微秒） */
 #define DART_PID_INTEGRAL_LIMIT_US              120.0f               /* 积分项限幅（微秒） */
 #define DART_PID_DEADBAND_DEG                     0.20f              /* 死区（度） */
-#define DART_PID_CHANGING_A                      10.0f               /* 积分分离参数 A */
-#define DART_PID_CHANGING_B                       2.0f               /* 积分分离参数 B */
-#define DART_PID_OUTPUT_LPF_RC                    0.01f              /* 输出低通滤波时间常数 */
-#define DART_PID_DERIVATIVE_LPF_RC                0.01f              /* 微分低通滤波时间常数 */
-#define DART_PID_OLS_ORDER                        0U  /* 用陀螺角速率代替误差微分 */
+#define DART_PID_CHANGING_A                      10.0f               /* 自稳变速积分 A（|e| > A+B 停积分） */
+#define DART_PID_CHANGING_B                       5.0f               /* 自稳变速积分 B（|e| <= B 全额积分） */
+#define DART_PID_OUTPUT_LPF_RC                    0.003f             /* 输出低通时间常数（秒，2026-11-20 降延迟） */
+#define DART_PID_DERIVATIVE_LPF_RC                0.01f              /* 微分低通时间常数（秒） */
+#define DART_PID_OLS_ORDER                        0U                 /* 0 = 用陀螺角速率代替误差微分 */
 #define DART_PID_IMPROVE_FLAGS  (Integral_Limit | Trapezoid_Intergral | \
-                                 DerivativeFilter | OutputFilter)      /* PID 改进标志位 */
-#define DART_YAW_KP                              20.0f               /* 偏航 PID 比例系数 */
-#define DART_YAW_KI                               0.00f               /* 偏航 PID 积分系数 */
-/* Kd 的单位是“微秒 /（度/秒）”，符号需在实机上确认。
-   11.15 六发实测：舵面 -> 角速率互相关峰值在 198~264 ms（6~8 帧），
-   回路增益 KP*0.09*3.5 约 6.3，在 1/(2*0.21)=2.4 Hz 处转满 180 度，
-   表现为升降两段都存在的 ±2~4 度、约 2 Hz 极限环。
-   按一阶对象 + 纯延迟模型扫参数：KD 1.5 -> 2.5 时残余摆幅
-   从 2.5 度降到 2.0 度，而对外部扰动的峰值偏差不变（2.19 度）；
-   KD 到 4.0 以上会发散（12 度），2.5 是留足余量的折中。 */
-#define DART_YAW_KD                               2.5f              /* 偏航 PID 微分系数 */
-#define DART_PITCH_KP                            10.0f               /* 俯仰 PID 比例系数 */
-#define DART_PITCH_KI                             0.0f               /* 俯仰 PID 积分系数 */
-#define DART_PITCH_KD                             2.5f              /* 俯仰 PID 微分系数 */
-#define DART_ROLL_KP                             10.0f               /* 横滚 PID 比例系数 */
-#define DART_ROLL_KI                              8.00f               /* 横滚 PID 积分系数 */
-#define DART_ROLL_KD                              1.0f    
-/* 横滚 PID 微分系数 */
+                                 DerivativeFilter | OutputFilter)
+/* 11.20 41 发实测：yaw 20/0/2.5 阻尼良好（2ndHalf_pp 中位 0.76 度）但存在 -2.5~-4.2 度静差，
+   补 KI=5 + 变速积分消静差；roll 原 10/8/1.0 偏软（下降段被偏航耦合拉偏至 18~32 度），
+   提到 15/5/1.8 + 变速积分增刚度防饱和。 */
+#define DART_YAW_KP                              20.0f               /* 偏航自稳 KP */
+#define DART_YAW_KI                               5.0f               /* 偏航自稳 KI（配变速积分） */
+#define DART_YAW_KD                               2.5f               /* 偏航自稳 KD（>4 易 2 Hz 极限环） */
+#define DART_PITCH_KP                            10.0f               /* 俯仰自稳 KP */
+#define DART_PITCH_KI                             0.0f               /* 俯仰自稳 KI */
+#define DART_PITCH_KD                             2.5f               /* 俯仰自稳 KD */
+#define DART_ROLL_KP                             15.0f               /* 横滚自稳 KP */
+#define DART_ROLL_KI                              5.0f               /* 横滚自稳 KI（配变速积分） */
+#define DART_ROLL_KD                              1.8f               /* 横滚自稳 KD */
 
-/* 俯仰/偏航在自稳与视觉两种工况下各用一组独立的 PID 参数。 */
 #define DART_YAW_STAB_KP                         DART_YAW_KP
 #define DART_YAW_STAB_KI                         DART_YAW_KI
 #define DART_YAW_STAB_KD                         DART_YAW_KD
@@ -423,132 +318,31 @@ extern "C" {
 #define DART_PITCH_STAB_KI                       DART_PITCH_KI
 #define DART_PITCH_STAB_KD                       DART_PITCH_KD
 
-/* 视觉 PID 的输入是角度误差（度）。当前焦距 480 px（1280x960 读出窗口，
-   见 DART_CAMERA_FOCAL_X_PX），视场 36.9x28.1 度。
-
-   --- 视觉 yaw 增益 20/2.0 -> 12/3.0（2026-11-16，11.15 两组实测 + 延迟模型）---
-   反解 11.15 全部有视觉发次的舵面 yCh 对 (cmd, gz) 做二元回归，等效 D 系数分两档：
-     高 D 组（KD~3.3：00001~00017、00024）  下降段 yaw 摆幅中位 3.3 度、顶反帧 18%
-     低 D 组（KD~1.7：00020、00025~00039）  下降段 yaw 摆幅中位 13.8 度、顶反帧 7%
-   KD 从 3.3 降到 1.7，摆幅放大 4 倍。摆动是 2 Hz 极限环（周期 0.41~0.64 s），
-   由舵面 200 ms + 相机 100~130 ms 双段延迟决定，与增益无关。
-
-   但 11.15 全程 KP 都是 20，数据里没有 KP 的对照组；KP 只能按模型定：
-   一阶对象 + 双段延迟模型（已用 00039 过中心 gz 序列 26/-41/+69 验证）：
-     20/3.0  收敛 5.5 s（超过下降段 1.3~1.8 s 窗口，实际永远收敛不了）
-     12/3.0  收敛 0.77 s，反向超调 0.05~1.2 度
-   故 KP 20 -> 12、KD 2.0 -> 3.0，两者必须一起改：只加 KD 会「顶反」，
-   只降 KP 会「又慢又甩」。
-
-   前视项（DART_LEAD_TIME_S / DART_LEAD_MAX_DEG / DART_LOS_RATE_LIMIT_DEG_S）
-   暂时不动：2 Hz 周期下把前视加到 0.33 s 会预测到反号（11.15 实测教训）。
-   待摆幅压到 5 度以内再放开。 */
-
-/* --- 视觉 yaw 的积分与积分分离窗口（2026-11-18 新增）---
-   11.18 实测：过中心瞬间舵面已回落到接近段峰值的 76%，机头随后被气动回正力矩
-   掰回原航向（回摆量 = 偏转量的 86~106%），弹道没有改变。要让弹道真的弯，必须在
-   视线误差归零后仍保持舵偏（维持攻角）——这件事只能由积分做：P 项在误差为 0 时
-   输出 0，D 项在角速率为 0 时输出 0，两者都守不住静态攻角。
-
-   为什么 KI 取 25：
-   目标的绝对方位变化率 13~29 度/秒，等效角度增益 3.7 度/秒/度（1 度指令换 3.7 度/秒），
-   稳态滞后 = 29 / 3.7 = 7.8 度；要把这 7.8 度补掉，需要 12 微秒/度 x 7.8 = 94 微秒
-   的偏置，而积分限幅是 120 微秒，刚好装得下。
-   误差 8~10 度、持续 0.4 秒的接近段可攒 40~60 微秒（限幅的 1/3~1/2），
-   先把稳态滞后压掉一半；若不够再往上加。
-   稳定性：2 Hz 处积分只贡献 25/12.6 = 2 微秒/度（KP 的 17%），相位损失约 9 度，
-   不会把 1.06 的 G*T 推过 1.57 的边界。
-
-   为什么单独给视觉 yaw 一套 A/B（10/10）：
-   全局的 A=10/B=2 在误差大于 12 度时把积分完全关掉，而下降段误差常态是 5~15 度，
-   等于装了积分却几乎不工作（11.18 那几次加 KI 从数据里看不出任何痕迹）。
-   10/10 表示 10 度以内全额积分、10~20 度线性降到 0，只挡真正的饱和。 */
+/* 视觉 yaw PID（MODE 0 / MODE 2 使用）：KI=25 维持稳态攻角，A/B=10/10 覆盖下降段 5~15 度常态误差 */
 #define DART_YAW_VISION_KP                       14.0f
 #define DART_YAW_VISION_KI                       25.0f
 #define DART_YAW_VISION_KD                       3.0f
 #define DART_YAW_VISION_CHANGING_A               10.0f
 #define DART_YAW_VISION_CHANGING_B               10.0f
 
-/* --- yaw 制导结构（2026-11-18）---
-   0 = 原角度 PID（回退用）
-   1 = 速率型 PN：机头按 N 倍视线角速率转，不需要速度、不需要加速度计
-   2 = PN + 加速度内环：外环给横向加速度指令，内环用加速度计闭环到力
-   先做台架符号确认（DART_ACCEL_YAW_SIGN / AXIS），确认前建议 1。 */
+/* yaw 制导模式：0=角度 PID / 1=速率型 PN（默认，配方案 A 惯性 KF）/ 2=PID+攻角增益 */
 #define DART_YAW_PN_MODE_OFF                     0
 #define DART_YAW_PN_MODE_RATE                    1
-#define DART_YAW_PN_MODE_AOA                     2   /* PID + 攻角增益（2026-11-19 替换原加速度内环） */
-#define DART_YAW_PN_MODE_PURE                    3   /* 纯 PN：K*N*omega - Kd*gz，不依赖加速度计 */
-/* 2026-11-19 决定：回到 0（角度 PID），暂停 PN 两条路线。
-   依据（11.19 十发数据）：
-   1) 7.6% 的视觉帧是识别框跳变，单帧视线角速率可被伪造成 100~540 度/秒，
-      PN 会把它放大成一次满舵；角度 PID 只错一帧，下一帧即纠正。
-   2) 视觉速率只能靠帧间差分 + 低通重建，滞后 80~150 ms；
-      00006 第 19.04 帧真实 +49 度/秒、算出来 -24 度/秒，符号都反了。
-   3) 加速度计 MotionAccel_b 在下降段只有 1.5~2.1 米/秒^2（协调转弯应 6~13），
-      加速度内环等于用不可靠信号做反馈。
-   代码与参数全部保留，改回 1 或 2 即可重新启用，但启用前必须先解决上面三条。 */
-#define DART_YAW_PN_MODE                         3
-#define DART_PN_N                                3.0f   /* 比例导引系数，2~5 */
-/* PN 方向符号：+1 = 视线角速率与 yaw 指令同号。台架上「目标向左移动时
-   yaw_u 应为负（左转）」若相反，把这个改成 -1.0f 即可，不用改公式。 */
-#define DART_PN_SIGN                             -1.0f
+#define DART_YAW_PN_MODE_AOA                     2
+#define DART_YAW_PN_MODE                         DART_YAW_PN_MODE_RATE
+#define DART_PN_N                                3.0f   /* 比例导引系数 */
+#define DART_PN_SIGN                             1.0f   /* +1 = INS 系左转为正，与 yaw_u 同号 */
 #define DART_PN_RATE_MAX                        90.0f   /* 速率指令限幅（度/秒） */
-#define DART_PN_V_NOM                           22.0f   /* 标称地速（米/秒），只用于把转速换成加速度 */
-#define DART_PN_K_RATE                           12.0f   /* 速率环增益（微秒 / (度/秒)）；2026-11-18 由 4 调到 6：11.18 反推机体 G=0.25 度/秒/微秒，K=4 时有效 N 只剩 1.5 追得慢，6 是脱靶与振动的折中 */
+#define DART_PN_K_RATE                           8.0f   /* 速率环增益（微秒/(度/秒)） */
+#define DART_PN_K_LOS                            0.0f   /* 弱角度居中项（1/秒）；0=纯速率型 PN */
+#define DART_PN_OUT_MAX                        250.0f   /* 速率型 PN 偏航输出限幅（微秒） */
+#define DART_PN_RATE_LPF_RC_S                    0.0f   /* 可选视线速率低通（秒）；方案 A 下设 0 省滞后 */
 
-#define DART_ACCEL_YAW_AXIS                        1   /* MotionAccel_b 里对应偏航侧向力的轴 */
-#define DART_ACCEL_YAW_SIGN                      1.0f  /* 台架确认！错了就是正反馈 */
-/* 加速度环增益（微秒 / (米/秒^2)）。2026-11-19 由 14 降到 4。
-   14 的等效速率增益是 K_A*V=308 微秒/(rad/s)=5.4 微秒/(度/秒)，与 K_RATE=6 叠加后
--   内环把每个噪声尖峰都放大成满舵。仿真 K_A=3~4 时舵偏 16~25 微秒、摆幅 5 度、
-   +-3 度停留 0.21 秒，全面优于原 PID（21 微秒 / 6.7 度 / 0.19 秒）。
-   4 的等效速率增益 88 微秒/(rad/s)=1.5 微秒/(度/秒)：内环只管补力，不抢速率环的活。 */
-#define DART_ACCEL_K_A                           4.0f
-#define DART_ACCEL_K_Q                           1.0f   /* 显式速率阻尼。a_meas 已含 V*gz 的速率反馈，K_Q 再加就重复刹车、拖低有效 N；留 1 作非协调转弯时的保险下限 */
-/* 加速度指令限幅（米/秒^2）。2026-11-19 由 25 降到 20：
-   20 m/s 下 20 米/秒^2 对应约 57 度/秒的转速，已接近舵面稳态能力上限，
-   再大只是把内环顶成继电器，输出在正负限幅之间来回跳。 */
-#define DART_ACCEL_CMD_MAX                     20.0f
-#define DART_ACCEL_OUT_MAX                     250.0f   /* 加速度环输出限幅（微秒），首飞保守 */
-
-/* ---------------------- yaw 攻角增益（MODE 2）----------------------------
-   把「目标最居中时的机头角 - 出射航向」按比例变成角度偏置，直接叠加到
-   PID 的输入角（yaw_command）上，不是加在输出上。稳态时机头会停在偏离
-   画面中心 lead 度的位置：lead = GAIN * (yaw_best - launch)，限幅 ±MAX。
-   依据：出射航向由 yaw 自稳保持，没有侧向力时机头贴着速度矢量，可当作
-   速度矢量方向的代理；两者之差就是「还需要转过多少」。
-
-   2026-11-20：GAIN 由常数改为 raw 的凹递增函数
-       G(|raw|) = MIN + (MAX - MIN) * |raw| / (|raw| + RAW_HALF)
-   含义：需求越大，单位角度放大得越多，但增长趋饱和（二阶导恒小于 0）。
-   用有理式而不是 1-exp(-x)：F103 无 FPU、本文件不引入 expf。
-   典型值：|raw|=0.5 -> 0.58；1 -> 0.64；3 -> 0.80；6 -> 0.91；10 -> 0.98
-   对应偏置：raw=6 时 5.46 度（原常数 0.6 只给 3.60 度）。
-   要退回常数增益，把 MIN 与 MAX 设成同一个值（例如都为 0.6）；
-   两者都为 0 时行为与纯 PID 完全一致。 */
-#define DART_YAW_AOA_GAIN_MIN                   0.50f  /* |raw| -> 0 时的增益 */
-#define DART_YAW_AOA_GAIN_MAX                   1.15f  /* |raw| -> 无穷时的渐近增益 */
-#define DART_YAW_AOA_RAW_HALF                   3.5f   /* 半饱和点：|raw| 等于此值时取增益中值 */
-#define DART_YAW_AOA_MAX_DEG                   10.0f   /* 攻角增益限幅（度），也是总指令放宽的量 */
-
-/* ---------------------- 纯 PN（MODE 3）----------------------------------
-   直接用视线角速率给舵，另加陀螺阻尼。阻尼不能省：omega 来自 26 fps 帧间
-   差分，11.19 数据里 7.6% 的帧是识别跳变，无阻尼时一帧跳变就是一个满舵脉冲。 */
-#define DART_PN_PURE_K                          22.0f   /* 微秒 / (度/秒)；2026-11-20 由 6 提高，见下方 ω 低通说明 */
-#define DART_PN_PURE_KD                         2.0f   /* 陀螺阻尼，微秒 / (度/秒) */
-
-/* ---------------------------------- ω 低通（MODE 1 / 3）----------------------
-   为什么需要：目标接近对准时真实 ω 只有 1~2 度/秒，而估计噪声有 7~8 度/秒。
-   PN 的导向输出 = K*N*ω，不先降噪就提增益，噪声会直接顶满舵。
-   15 发实测（26~31 fps，ω 原始 sd 7.7 度/秒）：
-     RC   0 ms -> sd 7.7      RC  50 ms -> 3.2      RC 120 ms -> 1.7
-     RC 200 ms -> sd 1.1      RC 300 ms -> 0.8
-   当前 K*N = 22*3 = 66：RC=200 ms 时 1.5 度/秒 给 99 微秒、噪声抖动 75 微秒，
-   信噪比约 1.3（RC=120 ms 只有 0.9，RC=50 ms 只有 0.5）。
-   代价：相位滞后约等于 RC，叠加视觉 130 ms 后总延迟约 330 ms，1.2 秒窗口内
-   必然超调——这是为了「消除 1~2 度/秒 的残余速率」主动换来的，不要当成振荡去调。
-   设 0 = 关闭低通。 */
-#define DART_PN_RATE_LPF_RC_S                   0.20f
+/* yaw 攻角增益（MODE 2）：G(|dpsi|) = MIN + (MAX - MIN)*|dpsi|/(|dpsi| + HALF)，叠加于 PID 输入 */
+#define DART_YAW_AOA_GAIN_MIN                   0.8f
+#define DART_YAW_AOA_GAIN_MAX                   2.0f
+#define DART_YAW_AOA_RAW_HALF                   3.5f
+#define DART_YAW_AOA_MAX_DEG                   15.0f
 #define DART_PITCH_VISION_KP                     26.0f
 #define DART_PITCH_VISION_KI                     0.00f
 #define DART_PITCH_VISION_KD                     3.00f
@@ -563,45 +357,22 @@ extern "C" {
 #ifndef DART_ASCENT_PITCH_MODE
 #define DART_ASCENT_PITCH_MODE                  DART_PITCH_MODE_LIFT_PID
 #endif
-/* 阶段2 参数。PULL_US 仅 LIFT_BANG 使用；STOP_DEG 两种策略共用：
-   LIFT_BANG 拿它当固定抬头的终止角，LIFT_PID 拿它当停止判据与速率环的角度基准。
-   调低 STOP_DEG 可提前收手，靠惯性补足剩余角度，减小过冲。 */
-/* 阶段2 固定抬头输出（微秒）。11.12 全部 14 发实测为 110。
-   当前置 0 = 关掉阶段2 的主动抬头，只保留阶段1 的 100 微秒抬升，属对照配置；
-   飞行前请确认这是预期状态，否则改回 110。 */
-#define DART_ASCENT_PITCH_PULL_US               0.0f
+/* 阶段2 参数：PULL_US 仅 LIFT_BANG 用；STOP_DEG 为两种策略共用的停止/目标角 */
+#define DART_ASCENT_PITCH_PULL_US               0.0f    /* LIFT_BANG 固定抬头输出（微秒） */
+#define DART_ASCENT_PITCH_STOP_DEG              23.0f   /* 抬回此角即停止补偿（度） */
+#define DART_ASCENT_PITCH_RATE_GAIN             1.0f    /* LIFT_PID 角度->速率增益（1/秒） */
+#define DART_ASCENT_PITCH_MAX_RATE             35.0f    /* LIFT_PID 目标速率限幅（度/秒） */
+#define DART_ASCENT_PITCH_RATE_KD               2.0f    /* LIFT_PID 速率环增益（微秒/(度/秒)） */
 
-#define DART_ASCENT_PITCH_STOP_DEG              23.0f   /* 抬回此角度即停止补偿（度）；两种策略共用 */
-
-/* LIFT_PID 阶段2 的速率环参数（方案 B：角度差 -> 目标速率 -> 速率误差 -> 舵面）
-   工作点（target=23）：pitch=20/gy=120 -> 246 us，pitch=12/gy=60 -> 142 us，
-   pitch=8/gy=20 -> 70 us。11.12 的 680 帧回放：平均 197 us，3% 打满 420。
-   注意：pitch 低于 23 时角度差最大只有 15 度，rate_cmd 远达不到限幅，
-   所以 GAIN 与 MAX_RATE 影响很小，真正决定力度的是 RATE_KD。 */
-#define DART_ASCENT_PITCH_RATE_GAIN             1.0f    /* 角度差换算成目标速率（1/秒） */
-#define DART_ASCENT_PITCH_MAX_RATE             35.0f    /* 目标低头速率限幅（度/秒） */
-#define DART_ASCENT_PITCH_RATE_KD               2.0f    /* 速率误差换算成舵面（微秒/(度/秒)） */
-
-//roll补偿
+/* 横滚补偿与水平自稳目标 */
 #define DART_ASCENT_ROLL_COMPENSATION_ENABLE    0U      /* 1: 启用 roll 初始补偿，0: 走 roll 自稳 */
 #define DART_ASCENT_ROLL_TARGET_DEG             0.0f    /* roll 补偿目标角（度） */
-#define DART_ASCENT_ROLL_LIFT_US                100.0f  /* roll 固定抬升输出（微秒），符号需实机确认 */
-/* roll 自稳目标角：固定 0°，即机翼水平。
-   原逻辑在未补偿时保持起飞横滚角，会把发射架上的初始倾斜带入整段飞行。 */
-#define DART_ROLL_HOLD_DEG                      0.0f
-/* ------------------------------ 轴向校准 ------------------------------- */
-/* 轴向校准：符号与坐标映射 */
-#define DART_LAUNCH_X_SIGN                        1.0f               /* 起飞加速度 X 轴符号 */
-/* 相机偏航角 -> INS yaw 系的符号。
-   本机 IMU 的 pitch/roll 互换且带负号（见 DART_SWAP_INS_PITCH_ROLL），
-   INS 的 yaw 轴整体与机体反向：yaw_ins = -psi，gz = -psi_dot。
-   相机是正向安装的（画面右 = 机体右），所以相机角度必须取反才能进入
-   INS 系，与 yaw_ins / gz 同号。11.14 录像实测相邻帧 dX/dyaw_ins =
-   +1.08 / +0.79（正常相机应为 -1），确认反向。
+#define DART_ASCENT_ROLL_LIFT_US                100.0f  /* roll 固定抬升输出（微秒） */
+#define DART_ROLL_HOLD_DEG                      0.0f    /* roll 自稳目标角（0 度=机翼水平） */
 
-   全系统只保留这一处 yaw 符号：视觉误差、视线角速率、PID 输出都不再
-   单独乘符号，与上升段 calculate_yaw_hold 的结构完全一致。
-   台架若发现 yaw 朝目标反方向转，只改这一处。 */
+/* ------------------------------ 轴向校准 ------------------------------- */
+#define DART_LAUNCH_X_SIGN                        1.0f               /* 起飞加速度 X 轴符号 */
+/* 相机右正 -> INS yaw 左正（yaw_ins = -psi, gz = -psi_dot），全系统唯一视觉 yaw 符号位 */
 #define DART_CAMERA_YAW_SIGN                     (-1.0f)
 #define DART_CAMERA_PITCH_SIGN                   1.0f               /* 与取反后的机体俯仰角一致 */
 #define DART_ROLL_OUTPUT_SIGN                     -1.0f               /* 横滚输出符号 */
@@ -773,8 +544,6 @@ typedef struct
     uint8_t descent_confirm_count;          /* 下降确认计数 */
     uint8_t descent_target_seen;            /* 本次下降已首次识别有效目标 */
     uint8_t descent_vision_active;          /* 下降段当前正在使用视觉制导 */
-    uint8_t descent_glide_active;           /* 下降段滑翔补偿已锁存 */
-    float descent_glide_pitch_deg;          /* 锁存的滑翔俯仰角 */
     uint8_t landed;                         /* 已检测到落地（角速率突增） */
     float landing_prev_w2;                  /* 上一周期角速率平方，用于连两帧判据 */
     float yaw_best_deg;                     /* 目标最居中时的机体航向（度） */
