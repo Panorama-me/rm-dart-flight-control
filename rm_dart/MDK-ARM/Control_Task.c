@@ -53,6 +53,29 @@ static float wrap_180(float angle)
         angle += 360.0f;
     return angle;
 }
+
+/**
+ * @brief 攻角增益调度：raw 的凹递增函数（2026-11-20）
+ * @param dpsi raw = yaw_best - launch（度），带符号
+ * @return 增益幅值（无量纲，恒 >= 0）
+ *         注意：本函数只返回幅值，符号由调用处的 dpsi 自带——
+ *         若这里再带一次符号，负 raw 会被乘成正偏置（方向反向）。
+ *
+ * G(|raw|) = MIN + (MAX - MIN) * |raw| / (|raw| + RAW_HALF)
+ * 二阶导 = -2*(MAX-MIN)*RAW_HALF / (|raw|+RAW_HALF)^3 < 0，恒为凹：
+ * raw 小时斜率大、raw 大时趋于 MAX。
+ * 用有理式而不是 1-exp(-x)，避免在无 FPU 的 F103 上引入 expf。
+ * MIN == MAX 时退化为常数增益。
+ */
+static float dart_aoa_gain_of(float dpsi)
+{
+    float mag = fabsf(dpsi);
+    float g = DART_YAW_AOA_GAIN_MIN +
+              (DART_YAW_AOA_GAIN_MAX - DART_YAW_AOA_GAIN_MIN) *
+              mag / (mag + DART_YAW_AOA_RAW_HALF);
+
+    return g;
+}
 #if DART_YAW_CALIB_ENABLE
 /*
  * @brief 对原始偏航角做上电零偏补偿
@@ -1278,7 +1301,7 @@ static void run_descent_guidance(const INS_t *ins)
             {
                 float dpsi = wrap_180(DartControl.yaw_best_deg -
                                       DartControl.telemetry.launch_yaw_deg);
-                aoa_deg = DART_YAW_AOA_GAIN * dpsi;
+                aoa_deg = dart_aoa_gain_of(dpsi) * dpsi;
                 aoa_deg = constrain_float(aoa_deg,
                                           -DART_YAW_AOA_MAX_DEG,
                                           DART_YAW_AOA_MAX_DEG);
@@ -1521,7 +1544,7 @@ void attitude_telemetry_send(void)
     {
         a_meas_snap = wrap_180(DartControl.yaw_best_deg -
                                DartControl.telemetry.launch_yaw_deg);
-        pn_omega_snap = constrain_float(DART_YAW_AOA_GAIN * a_meas_snap,
+        pn_omega_snap = constrain_float(dart_aoa_gain_of(a_meas_snap) * a_meas_snap,
                                         -DART_YAW_AOA_MAX_DEG,
                                         DART_YAW_AOA_MAX_DEG);
     }
@@ -1863,7 +1886,7 @@ void control_Task(void)
             {
                 float dpsi = wrap_180(DartControl.yaw_best_deg -
                                       DartControl.telemetry.launch_yaw_deg);
-                aoa_dbg = constrain_float(DART_YAW_AOA_GAIN * dpsi,
+                aoa_dbg = constrain_float(dart_aoa_gain_of(dpsi) * dpsi,
                                           -DART_YAW_AOA_MAX_DEG,
                                           DART_YAW_AOA_MAX_DEG);
             }
