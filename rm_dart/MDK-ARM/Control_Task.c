@@ -1360,6 +1360,11 @@ static void run_descent_guidance(const INS_t *ins)
     camera_pitch_rate = DART_CAMERA_PITCH_SIGN *
                         (DartControl.vision_y_ekf.rate -
                          DART_INS_PITCH_RATE_RAD_S(ins)) * DART_RAD_TO_DEG;
+    /* 横滚角提前算：PN 的 ω 也要用它从相机平面旋回机体轴（2026-11-21）。 */
+    roll_rad = DART_INS_ROLL_DEG(ins) * DART_DEG_TO_RAD;
+    cos_roll = cosf(roll_rad);
+    sin_roll = sinf(roll_rad);
+
     /* PN 用未钳位的角速率：原来的 15 度/秒是给前视项留的，对 PN 太紧。 */
     pn_omega_yaw = constrain_float(camera_yaw_rate,
                                    -DART_PN_RATE_MAX, DART_PN_RATE_MAX);
@@ -1376,6 +1381,24 @@ static void run_descent_guidance(const INS_t *ins)
         pn_omega_lpf += alpha * (pn_omega_yaw - pn_omega_lpf);
         pn_omega_yaw = pn_omega_lpf;
     }
+
+    /* 遥测在旋转前取样：这个 ω 是「相机平面」的惯性视线角速率，与 CSV 里
+       los_yaw_deg 的差分同一轴系，tools/eval_vis_rate.py 拿后者当真值。 */
+    dbg_pn_omega = pn_omega_yaw;
+
+    /* PN 的 ω 必须在机体轴：相机固连机体，滚转 phi 时图像轴随之旋转，
+       omega_body_yaw = cos(phi)*omega_img_x + sin(phi)*omega_img_y，
+       与下面角度指令用的是同一套变换。
+       不旋就是「相机轴取数、机体轴相减」：滚转 16 度、omega_pitch 35 度/秒时
+       漏 0.28*35 约 10 度/秒，经 K*N=24 折算约 240 微秒，已经到满量程。
+       11.20 实测：漏项中位 0.6 度/秒（可忽略），5% 的帧超过 96 微秒等效舵偏。 */
+    {
+        float rate_pitch = constrain_float(camera_pitch_rate,
+                                           -DART_PN_RATE_MAX, DART_PN_RATE_MAX);
+
+        pn_omega_yaw = cos_roll * pn_omega_yaw + sin_roll * rate_pitch;
+    }
+
     camera_yaw_rate = constrain_float(camera_yaw_rate,
                                       -DART_LOS_RATE_LIMIT_DEG_S,
                                       DART_LOS_RATE_LIMIT_DEG_S);
@@ -1389,10 +1412,7 @@ static void run_descent_guidance(const INS_t *ins)
     camera_pitch_command = lead_pursuit_command(
         DartControl.telemetry.vision.los_pitch_deg, camera_pitch_rate);
 
-    /* 根据当前横滚角将相机平面指令旋转到机体俯仰/偏航 */
-    roll_rad = DART_INS_ROLL_DEG(ins) * DART_DEG_TO_RAD;
-    cos_roll = cosf(roll_rad);
-    sin_roll = sinf(roll_rad);
+    /* 根据当前横滚角将相机平面指令旋转到机体俯仰/偏航（cos/sin 上面已算好） */
     yaw_command = cos_roll * camera_yaw_command + sin_roll * camera_pitch_command;
     pitch_command = -sin_roll * camera_yaw_command + cos_roll * camera_pitch_command;
     yaw_command = constrain_float(yaw_command,
@@ -1427,7 +1447,6 @@ static void run_descent_guidance(const INS_t *ins)
     /* yaw 制导：0=角度 PID / 1=速率型 PN / 2=PID+攻角增益 */
     yaw_rate_now = DART_INS_YAW_RATE_RAD_S(ins) * DART_RAD_TO_DEG;
     yaw_u = 0.0f;
-    dbg_pn_omega = pn_omega_yaw;
     dbg_a_cmd = 0.0f;
     if (DART_MODE != DART_MODE_PITCH)
     {
