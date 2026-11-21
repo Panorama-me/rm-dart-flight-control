@@ -16,6 +16,8 @@ static uint32_t debug_imu_ready_ms;
 static uint8_t debug_ref_valid;
 /* 视线角速率可选低通状态（MODE 1）。无目标时清零，避免陈旧值带进下一次视觉。 */
 static float pn_omega_lpf;
+/* 下降段 MODE 1 偏航配平前馈：首次锁定目标时锁存上升段 yaw_pid.Iout，抵消气动偏置。 */
+static float yaw_pn_trim_ff;
 #if DART_VISION_FILTER_MODE == DART_VISION_FILTER_EKF
 /* 方案 A 双轴：机体陀螺积分角历史缓冲（int_gz 左转为正、int_gy 低头为正；
    不用欧拉 yaw，避免大俯冲角下 1/cos(pitch) 放大导致 gz 泄漏；共占 384 字节 RAM）。 */
@@ -1221,6 +1223,13 @@ static void run_descent_guidance(const INS_t *ins)
 #endif
     }
 
+    if (!DartControl.descent_target_seen)
+    {
+        /* 首次进入下降段视觉：锁存上升段/滑翔自稳学到的气动偏航配平（限幅 +-80 us）。 */
+        yaw_pn_trim_ff = constrain_float(DartControl.yaw_pid.Iout,
+                                         -DART_PN_TRIM_FF_MAX_US,
+                                         DART_PN_TRIM_FF_MAX_US);
+    }
     if (!DartControl.descent_vision_active)
     {
         reset_pid(&DartControl.yaw_vision_pid);
@@ -1317,7 +1326,7 @@ static void run_descent_guidance(const INS_t *ins)
                                  DART_PN_K_LOS * los_body_yaw;
                 rate_cmd = constrain_float(rate_cmd,
                                            -DART_PN_RATE_MAX, DART_PN_RATE_MAX);
-                yaw_u = DART_PN_K_RATE * (rate_cmd - yaw_rate_now);
+                yaw_u = yaw_pn_trim_ff + DART_PN_K_RATE * (rate_cmd - yaw_rate_now);
                 yaw_u = constrain_float(yaw_u,
                                         -DART_PN_OUT_MAX, DART_PN_OUT_MAX);
             }
@@ -1764,6 +1773,7 @@ void control_Init(void)
         __enable_irq();
 
     pn_omega_lpf = 0.0f;
+    yaw_pn_trim_ff = 0.0f;
 #if DART_VISION_FILTER_MODE == DART_VISION_FILTER_EKF
     gyro_hist_reset();
     gyro_hist_imu_armed = 0U;
@@ -2109,6 +2119,7 @@ void control_Task(void)
             reset_pid(&DartControl.pitch_vision_pid);
             DartControl.descent_target_seen = 0U;
             DartControl.descent_vision_active = 0U;
+            yaw_pn_trim_ff = 0.0f;
             DartControl.telemetry.target_yaw_deg = 0.0f;
             DartControl.telemetry.target_pitch_deg = 0.0f;
             set_state(DART_STATE_DESCENT);

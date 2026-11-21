@@ -244,9 +244,9 @@ extern "C" {
 #define DART_YAW_BEST_CONFIRM_FRAMES             2U                 /* 连续改善帧数门限，防单帧跳变 */
 #define DART_DESCENT_UNLOCK_LOST_FRAMES          2U                 /* 连续丢视觉帧达此值即脱锁（约 60 ms） */
 /* 俯仰速率环（滑翔/视觉共用）：rate_cmd = clamp(GAIN * (pitch - target)), out = KD * (rate_cmd - gy) */
-#define DART_GLIDE_PITCH_DEG                (-45.0f)   /* 基准滑翔俯仰角（度） */
-#define DART_GLIDE_RATE_GAIN                  5.0f     /* 滑翔段角度->速率增益（1/秒） */
-#define DART_GLIDE_MAX_RATE                  80.0f     /* 滑翔段最大低头速率（度/秒） */
+#define DART_GLIDE_PITCH_DEG                (-28.0f)   /* 基准滑翔俯仰角（度，2026-11-21 放缓预俯冲给 yaw 留时间） */
+#define DART_GLIDE_RATE_GAIN                  2.5f     /* 滑翔段角度->速率增益（1/秒） */
+#define DART_GLIDE_MAX_RATE                  45.0f     /* 滑翔段最大低头速率（度/秒） */
 #define DART_VISION_PITCH_RATE_GAIN           8.0f     /* 视觉段角度->速率增益（1/秒） */
 #define DART_VISION_PITCH_MAX_RATE          80.0f     /* 视觉段最大低头速率（度/秒） */
 #define DART_GLIDE_RATE_KD                    2.5f     /* 俯仰速率环增益（微秒/(度/秒)） */
@@ -326,12 +326,13 @@ extern "C" {
 #define DART_YAW_PN_MODE_RATE                    1
 #define DART_YAW_PN_MODE_AOA                     2
 #define DART_YAW_PN_MODE                         DART_YAW_PN_MODE_RATE
-#define DART_PN_N                                2.5f   /* 比例导引系数（2026-11-21 由 3.0 收敛防过中心甩头） */
+#define DART_PN_N                                3.0f   /* 比例导引系数 */
 #define DART_PN_SIGN                             1.0f   /* +1 = INS 系左转为正，与 yaw_u 同号 */
 #define DART_PN_RATE_MAX                       150.0f   /* 速率指令限幅（度/秒，放宽防大 gz 时过早松舵） */
-#define DART_PN_K_RATE                           8.0f   /* 速率环增益（微秒/(度/秒)） */
-#define DART_PN_K_LOS                            1.5f   /* 纯视线角居中项（1/秒，不再叠前视项） */
-#define DART_PN_OUT_MAX                        250.0f   /* 速率型 PN 偏航输出限幅（微秒） */
+#define DART_PN_K_RATE                          12.0f   /* 速率环增益（微秒/(度/秒)，2026-11-21 由 8 提至 12 增强大角度转向） */
+#define DART_PN_K_LOS                            2.5f   /* 纯视线角居中项（1/秒） */
+#define DART_PN_OUT_MAX                        350.0f   /* 速率型 PN 偏航输出限幅（微秒，2026-11-21 由 250 放宽） */
+#define DART_PN_TRIM_FF_MAX_US                  80.0f   /* 继承上升段 yaw 积分配平前馈限幅（微秒） */
 #define DART_PN_RATE_LPF_RC_S                    0.0f   /* 可选视线速率低通（秒）；方案 A 下设 0 省滞后 */
 
 /* 下降段 pitch 制导模式：0 = 原速率环（vision_pitch_output），1 = Yaw 同款 PN + 中心对齐 */
@@ -344,9 +345,9 @@ extern "C" {
      (DART_PITCH_GUIDANCE_MODE != DART_PITCH_GUIDANCE_PN))
 #error "Invalid DART_PITCH_GUIDANCE_MODE"
 #endif
-#define DART_PITCH_PN_N                          2.5f   /* 俯仰比例导引系数 */
-#define DART_PITCH_PN_K_LOS                      3.0f   /* 俯仰纯视线角居中项（1/秒） */
-#define DART_PITCH_PN_K_RATE                     2.5f   /* 俯仰速率环增益（微秒/(度/秒)，与滑翔速率环一致） */
+#define DART_PITCH_PN_N                          1.2f   /* 俯仰比例导引系数（2026-11-21 由 3.0 降至 1.2，防重力弯曲导致顶边脱锁） */
+#define DART_PITCH_PN_K_LOS                      6.0f   /* 俯仰纯视线角居中项（1/秒，2026-11-21 由 3.0 提至 6.0 托住目标） */
+#define DART_PITCH_PN_K_RATE                     3.0f   /* 俯仰速率环增益（微秒/(度/秒)） */
 #define DART_PITCH_PN_RATE_MAX                 120.0f   /* 俯仰期望速率限幅（度/秒）；输出仍受 -150/+250 us 保护 */
 
 /* yaw 攻角增益（MODE 2）：G(|dpsi|) = MIN + (MAX - MIN)*|dpsi|/(|dpsi| + HALF)，叠加于 PID 输入 */
@@ -370,7 +371,7 @@ extern "C" {
 #endif
 /* 阶段2 参数：PULL_US 仅 LIFT_BANG 用；STOP_DEG 为两种策略共用的停止/目标角 */
 #define DART_ASCENT_PITCH_PULL_US               0.0f    /* LIFT_BANG 固定抬头输出（微秒） */
-#define DART_ASCENT_PITCH_STOP_DEG              23.0f   /* 抬回此角即停止补偿（度） */
+#define DART_ASCENT_PITCH_STOP_DEG              30.0f   /* 抬回此角即停止补偿（度） */
 #define DART_ASCENT_PITCH_RATE_GAIN             1.0f    /* LIFT_PID 角度->速率增益（1/秒） */
 #define DART_ASCENT_PITCH_MAX_RATE             35.0f    /* LIFT_PID 目标速率限幅（度/秒） */
 #define DART_ASCENT_PITCH_RATE_KD               2.0f    /* LIFT_PID 速率环增益（微秒/(度/秒)） */
