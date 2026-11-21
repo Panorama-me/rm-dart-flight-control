@@ -183,9 +183,12 @@ extern "C" {
    彻底消除大俯冲角下欧拉 yaw 的 1/cos(pitch) 放大泄漏与 pitch 未对齐毛刺。 */
 #define DART_VISION_DELAY_MS                  20U                   /* 视觉链路延迟补偿（毫秒，MED_WIN=1 实测约 20） */
 #define DART_YAW_HIST_LEN                     64U                   /* yaw/pitch 陀螺积分历史缓冲（2 ms * 64 = 128 ms） */
-#define DART_VISION_INERT_Q                  1200.0f                /* 惯性系 KF 连续过程噪声 ((度/秒)^2/秒) */
-#define DART_VISION_INERT_R_DEG2               0.25f                /* 惯性系 KF 量测方差（度^2，约 0.5 度） */
-#define DART_VISION_INERT_GATE_DEG             6.0f                 /* 惯性系创新门限（度） */
+#define DART_VISION_INERT_Q                  3000.0f                /* 惯性系 KF 连续过程噪声 ((度/秒)^2/秒；11.21 20发扫参滞后 52->35ms) */
+#define DART_VISION_INERT_R_DEG2               0.10f                /* 惯性系 KF 量测方差（度平方，约 0.32 度；低机动抖动 2.8 度/秒） */
+#define DART_VISION_INERT_GATE_DEG             6.0f                 /* 惯性系单轴独立创新门限（度） */
+#define DART_VISION_INERT_INIT_P11            400.0f                /* 第 2 帧两点速度初值方差 ((度/秒)^2，约 20 度/秒) */
+#define DART_VISION_INERT_INIT_MIN_DT_S        0.010f               /* 两点速度初值最小帧间隔（秒） */
+#define DART_VISION_INERT_INIT_MAX_DT_S        0.150f               /* 两点速度初值最大帧间隔（秒） */
 
 /* 视觉滤波模式：0 = EKF/方案 A（默认），1 = RAW_RATE（备用帧间差分） */
 #define DART_VISION_FILTER_EKF                  0U
@@ -236,7 +239,7 @@ extern "C" {
 #define DART_DESCENT_PITCH_THRESHOLD_DEG      (5.0f)                /* 俯仰角低于此值判入下降段（度） */
 #define DART_DESCENT_CONFIRM_COUNT               25U                /* 连续满足次数确认进入下降 */
 #define DART_DESCENT_GLIDE_ENABLE                1U                 /* 无目标时启用滑翔速率环 */
-#define DART_YAW_ABS_LOCK_ENABLE                 0U                 /* 1=脱锁保持最佳航向，0=回发射航向 */
+#define DART_YAW_ABS_LOCK_ENABLE                 0U                 /* 1=脱锁保持最佳航向，0=已跟踪过则锁存脱锁瞬间航向、未见目标回发射航向 */
 #define DART_YAW_BEST_MARGIN_DEG                0.15f               /* 刷新最佳航向所需 |LOS| 改进量（度） */
 #ifndef DART_YAW_BEST_TRACK_ENABLE
 #define DART_YAW_BEST_TRACK_ENABLE               1U                 /* 独立于 ABS_LOCK：跟踪记录最佳航向 */

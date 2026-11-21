@@ -167,14 +167,14 @@ flags：bit0 视觉链路有效、bit1 目标有效、bit2 IMU 就绪、bit3 握
 | 视线角速率 / 指令限幅 | ±15 °/s、**±15°**（死区 1.0 °/s、低通 **15 ms**） | `DART_LOS_RATE_LIMIT_DEG_S`、`DART_LEAD_COMMAND_LIMIT_DEG` |
 | 自稳 PID | yaw 20/**5.0**/2.5，pitch **10**/0/2.5，roll **15**/**5.0**/**1.8**（yaw/roll 启变速积分 10/5） | `DART_*_STAB_*`、`DART_ROLL_*`、`DART_PID_CHANGING_*` |
 | 视觉 PID | yaw **14**/**25**/**3.0**（变速积分 10/10），pitch 26/0/3.0 | `DART_*_VISION_*`、`DART_YAW_VISION_CHANGING_*` |
-| yaw 制导 | **当前模式 1：速率型 PN + 纯视线角对齐 + 配平前馈**（`K_RATE = 12`、`N = 3.0`、`SIGN = +1`、`K_LOS = 2.5`、`RATE_MAX = 150`、`OUT_MAX = 350`、继承上升 `yaw_pid.Iout` 限 `±80 µs`、`LPF = 0`；配方案 A 双轴**机体陀螺积分**惯性 KF，`DELAY = 20 ms`、`Q = 1200`；ω 与纯视线角均先按 roll 旋到机体轴）。0 角度 PID / 2 **PID+攻角增益**（`0.8→2.0`，半饱和 `3.5°`） | `DART_YAW_PN_MODE`、`DART_PN_*`、`DART_VISION_DELAY_MS`、`DART_VISION_INERT_*` |
+| yaw 制导 | **当前模式 1：速率型 PN + 纯视线角对齐 + 配平前馈**（`K_RATE = 12`、`N = 3.0`、`SIGN = +1`、`K_LOS = 2.5`、`RATE_MAX = 150`、`OUT_MAX = 350`、继承上升 `yaw_pid.Iout` 限 `±80 µs`、`LPF = 0`；配方案 A 双轴**机体陀螺积分+3D gx 离轴滚转补偿**惯性 KF，`DELAY = 20 ms`、`Q = 3000`、`R = 0.10`、第 2 帧两点速度初值、双轴独立 ±6° 门限；ω 与纯视线角均先按 roll 旋到机体轴）。0 角度 PID / 2 **PID+攻角增益**（`0.8→2.0`，半饱和 `3.5°`） | `DART_YAW_PN_MODE`、`DART_PN_*`、`DART_VISION_DELAY_MS`、`DART_VISION_INERT_*` |
 | pitch 制导（下降段） | **当前模式 1：Yaw 同款 PN + 纯视线角对齐**（`N = 1.2`、`K_LOS = 6.0`、`K_RATE = 3.0`、`RATE_MAX = 120`，输出沿用 `−150/+250 µs` 不对称限幅，抑重力俯冲防顶边脱锁）；0 = 原速率环 `vision_pitch_output` | `DART_PITCH_GUIDANCE_MODE`、`DART_PITCH_PN_*` |
 | 舵机 | PWM 200 Hz，中位 1550 µs，行程 550–2550 µs，步进 30 µs/控制周期 | `DART_SERVO_*` |
 | 图像 | QVGA 320×240；读出窗口 **1280×960**；焦距 **640/640**（2026-11-21 实测修正） | `DART_IMAGE_*`、`DART_CAMERA_FOCAL_*_PX` |
 | 视觉链路 / 目标保持 | 250 ms / 120 ms，500 ms 复位 EKF | `DART_VISION_LINK_TIMEOUT_MS` 等 |
 | 上电 yaw 零偏标定 | 静止 2 s，测漂移速率并补偿 | `DART_YAW_CALIB_*` |
 | 下降段滑翔速率环 | 基准 **−28°**；期望速率 = **2.5/s** × 角偏差（限 **±45 °/s**）；舵面 = 2.5 × 速率误差（2026-11-21 放缓预俯冲） | `DART_GLIDE_*`、`DART_VISION_PITCH_*` |
-| 脱锁保持 | **当前关闭**（0）：脱锁后回发射航向。置 1 则记录目标居中时的 yaw，脱锁后按该角闭环 | `DART_YAW_ABS_LOCK_ENABLE` |
+| 脱锁保持 | **当前 0**：视觉跟踪后末端脱锁自动**锁存脱锁瞬间航向**并继承配平积分（不再回拉发射航向导致临撞反舵）；从未见过目标时仍保持发射航向。置 1 则改按历史最居中航向闭环 | `DART_YAW_ABS_LOCK_ENABLE` |
 | 落地状态 | 合成角速率 >500 °/s 单帧，>400 连两帧 → LANDED，停四路 PWM、舵机自由 | `DART_LANDING_*` |
 | 录像 | MJPEG 直编码（`.mjpeg` 可直接播），4.4 ms/帧 5.6 KB；起飞开始，落地标志 +200 ms 停，非 debug 兜底 3 s | `RECORD_USE_MJPEG`、`RECORD_JPEG_QUALITY` |
 
