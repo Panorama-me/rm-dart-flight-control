@@ -156,8 +156,8 @@ extern "C" {
 #define DART_IMAGE_HEIGHT_PX                 240.0f    /* OpenMV 输出 QVGA 高度 */
 /* 等效焦距（像素）：f_out = 1921 * 320 / W（W=640 -> 960, W=1280 -> 480）。
    两轴必须相等，避免 roll 旋转后各向异性。 */
-#define DART_CAMERA_FOCAL_X_PX                960.0f
-#define DART_CAMERA_FOCAL_Y_PX                960.0f
+#define DART_CAMERA_FOCAL_X_PX                640.0f
+#define DART_CAMERA_FOCAL_Y_PX                640.0f
 /* 相机安装固定视线偏置（度），默认 0 */
 #define DART_CAMERA_YAW_BIAS_DEG               0.0f
 #define DART_CAMERA_PITCH_BIAS_DEG             0.0f
@@ -184,10 +184,10 @@ extern "C" {
 #define DART_VISION_EKF_MEAS_NOISE_PX         25.0f                 /* pitch EKF 量测方差（px^2） */
 #define DART_VISION_EKF_GATE_PX               40.0f                 /* pitch EKF 创新门限（px） */
 /* 方案 A：量测进 KF 前用 yaw(t - DELAY) 抵消机身转动，消除 gz 泄漏；
-   台架快甩机头观察 vis_rate_dps 贴零程度微调 DELAY_MS（MED_WIN=1 约 30 ms）。 */
-#define DART_VISION_DELAY_MS                  30U                   /* 视觉链路延迟补偿（毫秒） */
+   台架快甩机头观察 vis_rate_dps 贴零程度微调 DELAY_MS（MED_WIN=1 实测约 20 ms）。 */
+#define DART_VISION_DELAY_MS                  20U                   /* 视觉链路延迟补偿（毫秒） */
 #define DART_YAW_HIST_LEN                     64U                   /* yaw 历史环形缓冲（2 ms * 64 = 128 ms） */
-#define DART_VISION_INERT_Q                  200.0f                 /* 惯性系 yaw KF 过程噪声 ((度/秒)^2/秒) */
+#define DART_VISION_INERT_Q                  1200.0f                 /* 惯性系 yaw KF 过程噪声 ((度/秒)^2/秒) */
 #define DART_VISION_INERT_R_DEG2               0.25f                /* 惯性系 yaw KF 量测方差（度^2，约 0.5 度） */
 #define DART_VISION_INERT_GATE_DEG             6.0f                 /* 惯性系创新门限（度） */
 
@@ -332,9 +332,9 @@ extern "C" {
 #define DART_YAW_PN_MODE                         DART_YAW_PN_MODE_RATE
 #define DART_PN_N                                3.0f   /* 比例导引系数 */
 #define DART_PN_SIGN                             1.0f   /* +1 = INS 系左转为正，与 yaw_u 同号 */
-#define DART_PN_RATE_MAX                        90.0f   /* 速率指令限幅（度/秒） */
+#define DART_PN_RATE_MAX                       150.0f   /* 速率指令限幅（度/秒，放宽防大 gz 时过早松舵） */
 #define DART_PN_K_RATE                           8.0f   /* 速率环增益（微秒/(度/秒)） */
-#define DART_PN_K_LOS                            0.0f   /* 弱角度居中项（1/秒）；0=纯速率型 PN */
+#define DART_PN_K_LOS                            2.0f   /* 角度对齐居中项（1/秒），补强远距/短窗口起转 */
 #define DART_PN_OUT_MAX                        250.0f   /* 速率型 PN 偏航输出限幅（微秒） */
 #define DART_PN_RATE_LPF_RC_S                    0.0f   /* 可选视线速率低通（秒）；方案 A 下设 0 省滞后 */
 

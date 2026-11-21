@@ -167,9 +167,9 @@ flags：bit0 视觉链路有效、bit1 目标有效、bit2 IMU 就绪、bit3 握
 | 视线角速率 / 指令限幅 | ±15 °/s、**±15°**（死区 1.0 °/s、低通 **15 ms**） | `DART_LOS_RATE_LIMIT_DEG_S`、`DART_LEAD_COMMAND_LIMIT_DEG` |
 | 自稳 PID | yaw 20/**5.0**/2.5，pitch **10**/0/2.5，roll **15**/**5.0**/**1.8**（yaw/roll 启变速积分 10/5） | `DART_*_STAB_*`、`DART_ROLL_*`、`DART_PID_CHANGING_*` |
 | 视觉 PID | yaw **14**/**25**/**3.0**（变速积分 10/10），pitch 26/0/3.0 | `DART_*_VISION_*`、`DART_YAW_VISION_CHANGING_*` |
-| yaw 制导 | **当前模式 1：速率型 PN**（`K_RATE = 8`、`N = 3`、`SIGN = +1`、`K_LOS = 0`、`OUT_MAX = 250`、`LPF = 0`；配方案 A 惯性系 yaw KF，`yaw` 历史环形缓冲 30 ms 对齐；ω 先按 roll 旋到机体轴再与 `gz` 相减）。0 角度 PID / 2 **PID+攻角增益**（`0.8→2.0`，半饱和 `3.5°`），MODE 3 纯 PN 已移除 | `DART_YAW_PN_MODE`、`DART_PN_*`、`DART_VISION_DELAY_MS`、`DART_VISION_INERT_*` |
+| yaw 制导 | **当前模式 1：速率型 PN + 角度对齐**（`K_RATE = 8`、`N = 3`、`SIGN = +1`、`K_LOS = 2.0`、`RATE_MAX = 150`、`OUT_MAX = 250`、`LPF = 0`；配方案 A 惯性系 yaw KF，`DELAY = 20 ms`、`Q = 1200`；ω 先按 roll 旋到机体轴再与 `gz` 相减）。0 角度 PID / 2 **PID+攻角增益**（`0.8→2.0`，半饱和 `3.5°`），MODE 3 纯 PN 已移除 | `DART_YAW_PN_MODE`、`DART_PN_*`、`DART_VISION_DELAY_MS`、`DART_VISION_INERT_*` |
 | 舵机 | PWM 200 Hz，中位 1550 µs，行程 550–2550 µs，步进 30 µs/控制周期 | `DART_SERVO_*` |
-| 图像 | QVGA 320×240；读出窗口 **1280×960**（11.15 起 ioctl 生效），视场 **36.9°×28.1°**；焦距 **480/480** | `DART_IMAGE_*`、`DART_CAMERA_FOCAL_*_PX` |
+| 图像 | QVGA 320×240；读出窗口 **1280×960**；焦距 **640/640**（2026-11-21 实测修正） | `DART_IMAGE_*`、`DART_CAMERA_FOCAL_*_PX` |
 | 视觉链路 / 目标保持 | 250 ms / 120 ms，500 ms 复位 EKF | `DART_VISION_LINK_TIMEOUT_MS` 等 |
 | 上电 yaw 零偏标定 | 静止 2 s，测漂移速率并补偿 | `DART_YAW_CALIB_*` |
 | 下降段滑翔速率环 | 基准 **−45°**；期望速率 = **5.0/s** × 角偏差（限 ±80 °/s）；舵面 = 2.5 × 速率误差；视觉段 **5.0/s**、±100 °/s | `DART_GLIDE_*`、`DART_VISION_PITCH_*` |
