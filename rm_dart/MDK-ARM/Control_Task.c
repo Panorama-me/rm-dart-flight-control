@@ -17,12 +17,16 @@ static uint8_t debug_ref_valid;
 /* 视线角速率可选低通状态（MODE 1）。无目标时清零，避免陈旧值带进下一次视觉。 */
 static float pn_omega_lpf;
 #if DART_VISION_FILTER_MODE == DART_VISION_FILTER_EKF
-/* 方案 A：yaw 历史环形缓冲（0.01 度 int16 + 低 16 位毫秒时间戳，仅占 256 字节 RAM）。 */
-static int16_t yaw_hist_deg100[DART_YAW_HIST_LEN];
-static uint16_t yaw_hist_ms[DART_YAW_HIST_LEN];
-static uint8_t yaw_hist_head;
-static uint8_t yaw_hist_count;
-static uint8_t yaw_hist_imu_armed;
+/* 方案 A 双轴：机体陀螺积分角历史缓冲（int_gz 左转为正、int_gy 低头为正；
+   不用欧拉 yaw，避免大俯冲角下 1/cos(pitch) 放大导致 gz 泄漏；共占 384 字节 RAM）。 */
+static float gyro_yaw_int_deg;
+static float gyro_pitch_down_int_deg;
+static int16_t gyro_yaw_hist_deg100[DART_YAW_HIST_LEN];
+static int16_t gyro_pitch_hist_deg100[DART_YAW_HIST_LEN];
+static uint16_t gyro_hist_ms[DART_YAW_HIST_LEN];
+static uint8_t gyro_hist_head;
+static uint8_t gyro_hist_count;
+static uint8_t gyro_hist_imu_armed;
 #endif
 
 /* 握手 ACK 接收缓冲（OpenMV -> F103） */
@@ -215,13 +219,15 @@ static float glide_pitch_output(const INS_t *ins, float target_deg)
                            DART_GLIDE_MAX_RATE);
 }
 
-/* 视觉段：快速跟到视觉指令（有目标时用）。 */
+#if (DART_PITCH_GUIDANCE_MODE == DART_PITCH_GUIDANCE_RATE_LOOP)
+/* 视觉段原方案：按俯仰角度偏差给期望低头速率。 */
 static float vision_pitch_output(const INS_t *ins, float target_deg)
 {
     return pitch_rate_loop(ins, target_deg,
                            DART_VISION_PITCH_RATE_GAIN,
                            DART_VISION_PITCH_MAX_RATE);
 }
+#endif
 
 
 /**
@@ -324,171 +330,31 @@ static void vision_ekf_reset(DartVisionAxisEkf_t *ekf)
 }
 
 #if DART_VISION_FILTER_MODE == DART_VISION_FILTER_EKF
-/**
- * @brief 初始化视觉 EKF 滤波器
- * @param ekf EKF 结构体指针
- * @param pixel 当前像素坐标
- * @param center 图像中心像素坐标
- * @param focal 焦距（像素）
- *
- * 根据针孔相机模型，由像素偏差计算初始角度。
- */
-static void vision_ekf_init(DartVisionAxisEkf_t *ekf,
-                            float pixel,
-                            float center,
-                            float focal)
+/* 方案 A 双轴：清空机体陀螺积分角与历史环形缓冲。 */
+static void gyro_hist_reset(void)
 {
-    ekf->angle = atanf((pixel - center) / focal);
-    ekf->rate = 0.0f;
-    ekf->p00 = 0.02f;
-    ekf->p01 = 0.0f;
-    ekf->p10 = 0.0f;
-    ekf->p11 = 0.5f;
-    ekf->initialized = 1U;
+    gyro_yaw_int_deg = 0.0f;
+    gyro_pitch_down_int_deg = 0.0f;
+    gyro_hist_head = 0U;
+    gyro_hist_count = 0U;
 }
 
-/**
- * @brief 视觉 EKF 预测步
- * @param ekf EKF 结构体指针
- * @param dt 时间步长（秒）
- *
- * 状态量为 [角度, 角速度]，采用匀角速度模型，过程噪声为连续白噪声。
- */
-static void vision_ekf_predict(DartVisionAxisEkf_t *ekf, float dt)
+/* 每控制周期压入一条 (int_gz, int_gy_down, now_ms)，供视觉帧按延迟回溯对齐。 */
+static void gyro_hist_push(float yaw_int_deg, float pitch_down_int_deg, uint32_t now_ms)
 {
-    float p00;
-    float p01;
-    float p10;
-    float p11;
-    float dt2;
-    float dt3;
-    float dt4;
-
-    if (!ekf->initialized)
-        return;
-
-    dt2 = dt * dt;
-    dt3 = dt2 * dt;
-    dt4 = dt2 * dt2;
-
-    /* 状态预测：角度 += 角速度 * dt */
-    ekf->angle += ekf->rate * dt;
-
-    /* 协方差预测 */
-    p00 = ekf->p00 + dt * (ekf->p01 + ekf->p10) + dt2 * ekf->p11 +
-          0.25f * DART_VISION_EKF_PROCESS_NOISE * dt4;
-    p01 = ekf->p01 + dt * ekf->p11 +
-          0.5f * DART_VISION_EKF_PROCESS_NOISE * dt3;
-    p10 = ekf->p10 + dt * ekf->p11 +
-          0.5f * DART_VISION_EKF_PROCESS_NOISE * dt3;
-    p11 = ekf->p11 + DART_VISION_EKF_PROCESS_NOISE * dt2;
-
-    ekf->p00 = p00;
-    ekf->p01 = p01;
-    ekf->p10 = p10;
-    ekf->p11 = p11;
+    gyro_yaw_hist_deg100[gyro_hist_head] = (int16_t)(wrap_180(yaw_int_deg) * 100.0f);
+    gyro_pitch_hist_deg100[gyro_hist_head] = (int16_t)(wrap_180(pitch_down_int_deg) * 100.0f);
+    gyro_hist_ms[gyro_hist_head] = (uint16_t)now_ms;
+    gyro_hist_head = (uint8_t)((gyro_hist_head + 1U) % DART_YAW_HIST_LEN);
+    if (gyro_hist_count < DART_YAW_HIST_LEN)
+        gyro_hist_count++;
 }
 
-/* 任一轴与预测不一致时，整帧视觉数据都丢弃。 */
-static uint8_t vision_ekf_measurement_in_gate(const DartVisionAxisEkf_t *ekf,
-                                              float pixel,
-                                              float center,
-                                              float focal)
-{
-    float innovation;
-
-    if (!ekf->initialized)
-        return 1U;
-
-    innovation = pixel - (center + focal * tanf(ekf->angle));
-    return ((innovation >= -DART_VISION_EKF_GATE_PX) &&
-            (innovation <= DART_VISION_EKF_GATE_PX)) ? 1U : 0U;
-}
-
-/**
- * @brief 视觉 EKF 更新步
- * @param ekf EKF 结构体指针
- * @param pixel 测量像素坐标
- * @param center 图像中心像素坐标
- * @param focal 焦距（像素）
- *
- * 量测模型为：pixel = center + focal * tan(angle)
- * 使用一阶泰勒展开得到雅可比矩阵。
- */
-static void vision_ekf_update(DartVisionAxisEkf_t *ekf,
-                              float pixel,
-                              float center,
-                              float focal)
-{
-    float tangent;
-    float innovation;
-    float measurement_jacobian;
-    float innovation_covariance;
-    float gain_angle;
-    float gain_rate;
-    float p00;
-    float p01;
-    float p10;
-    float p11;
-
-    if (!ekf->initialized)
-    {
-        vision_ekf_init(ekf, pixel, center, focal);
-        return;
-    }
-
-    tangent = tanf(ekf->angle);
-    innovation = pixel - (center + focal * tangent);
-
-    measurement_jacobian = focal * (1.0f + tangent * tangent);
-    innovation_covariance = measurement_jacobian * measurement_jacobian * ekf->p00 +
-                            DART_VISION_EKF_MEAS_NOISE_PX;
-    if (innovation_covariance < 0.000001f)
-        return;
-
-    /* 计算卡尔曼增益 */
-    gain_angle = ekf->p00 * measurement_jacobian / innovation_covariance;
-    gain_rate = ekf->p10 * measurement_jacobian / innovation_covariance;
-
-    /* 状态更新 */
-    ekf->angle += gain_angle * innovation;
-    ekf->rate += gain_rate * innovation;
-
-    /* 协方差更新 */
-    p00 = ekf->p00;
-    p01 = ekf->p01;
-    p10 = ekf->p10;
-    p11 = ekf->p11;
-    ekf->p00 = (1.0f - gain_angle * measurement_jacobian) * p00;
-    ekf->p01 = (1.0f - gain_angle * measurement_jacobian) * p01;
-    ekf->p10 = p10 - gain_rate * measurement_jacobian * p00;
-    ekf->p11 = p11 - gain_rate * measurement_jacobian * p01;
-    /* 强制协方差对称 */
-    ekf->p01 = 0.5f * (ekf->p01 + ekf->p10);
-    ekf->p10 = ekf->p01;
-}
-
-/* 方案 A：清空 yaw 历史环形缓冲。 */
-static void yaw_hist_reset(void)
-{
-    yaw_hist_head = 0U;
-    yaw_hist_count = 0U;
-}
-
-/* 每控制周期压入一条 (yaw, now_ms)，供视觉帧按曝光+传输延迟回溯对齐。 */
-static void yaw_hist_push(float yaw_deg, uint32_t now_ms)
-{
-    yaw_hist_deg100[yaw_hist_head] = (int16_t)(wrap_180(yaw_deg) * 100.0f);
-    yaw_hist_ms[yaw_hist_head] = (uint16_t)now_ms;
-    yaw_hist_head = (uint8_t)((yaw_hist_head + 1U) % DART_YAW_HIST_LEN);
-    if (yaw_hist_count < DART_YAW_HIST_LEN)
-        yaw_hist_count++;
-}
-
-/* 按时间戳线性插值查出 (sample_tick_ms - delay_ms) 时刻的机体 yaw（度）。 */
-static float yaw_hist_get_delayed(uint32_t sample_tick_ms,
-                                  uint32_t delay_ms,
-                                  float fallback_yaw)
+/* 按时间戳线性插值查出 (sample_tick_ms - delay_ms) 时刻的历史积分角（度）。 */
+static float gyro_hist_get_delayed(const int16_t *deg100_buf,
+                                   uint32_t sample_tick_ms,
+                                   uint32_t delay_ms,
+                                   float fallback_deg)
 {
     uint16_t target_ms;
     uint8_t i;
@@ -496,38 +362,38 @@ static float yaw_hist_get_delayed(uint32_t sample_tick_ms,
     uint8_t prev_idx = 0U;
     int16_t prev_diff = 0;
 
-    if (yaw_hist_count == 0U)
-        return fallback_yaw;
+    if (gyro_hist_count == 0U)
+        return fallback_deg;
 
     target_ms = (uint16_t)(sample_tick_ms - delay_ms);
-    idx = (uint8_t)((yaw_hist_head + DART_YAW_HIST_LEN - 1U) % DART_YAW_HIST_LEN);
+    idx = (uint8_t)((gyro_hist_head + DART_YAW_HIST_LEN - 1U) % DART_YAW_HIST_LEN);
 
-    for (i = 0U; i < yaw_hist_count; i++)
+    for (i = 0U; i < gyro_hist_count; i++)
     {
-        int16_t diff = (int16_t)(yaw_hist_ms[idx] - target_ms);
+        int16_t diff = (int16_t)(gyro_hist_ms[idx] - target_ms);
 
         if (diff <= 0)
         {
-            float y0 = (float)yaw_hist_deg100[idx] * 0.01f;
+            float a0 = (float)deg100_buf[idx] * 0.01f;
 
             if ((i > 0U) && (prev_diff > 0) && (prev_diff > diff))
             {
-                float y1 = (float)yaw_hist_deg100[prev_idx] * 0.01f;
+                float a1 = (float)deg100_buf[prev_idx] * 0.01f;
                 float frac = (float)(-diff) / (float)(prev_diff - diff);
 
-                return wrap_180(y0 + frac * wrap_180(y1 - y0));
+                return wrap_180(a0 + frac * wrap_180(a1 - a0));
             }
-            return y0;
+            return a0;
         }
         prev_idx = idx;
         prev_diff = diff;
         idx = (uint8_t)((idx + DART_YAW_HIST_LEN - 1U) % DART_YAW_HIST_LEN);
     }
-    return (float)yaw_hist_deg100[prev_idx] * 0.01f;
+    return (float)deg100_buf[prev_idx] * 0.01f;
 }
 
-/* 方案 A：惯性系 yaw 视线角线性 KF（状态 [惯性视线角(度), 惯性视线角速率(度/秒)]）。 */
-static void vision_yaw_inert_init(DartVisionAxisEkf_t *kf, float meas_lam_deg)
+/* 方案 A 惯性系单轴线性 KF（yaw/pitch 共用；状态 [惯性视线角(度), 速率(度/秒)]）。 */
+static void vision_inert_init(DartVisionAxisEkf_t *kf, float meas_lam_deg)
 {
     kf->angle = wrap_180(meas_lam_deg);
     kf->rate = 0.0f;
@@ -538,7 +404,7 @@ static void vision_yaw_inert_init(DartVisionAxisEkf_t *kf, float meas_lam_deg)
     kf->initialized = 1U;
 }
 
-static void vision_yaw_inert_predict(DartVisionAxisEkf_t *kf, float dt)
+static void vision_inert_predict(DartVisionAxisEkf_t *kf, float dt)
 {
     float dt2;
     float dt3;
@@ -565,8 +431,8 @@ static void vision_yaw_inert_predict(DartVisionAxisEkf_t *kf, float dt)
     kf->p11 = p11;
 }
 
-static uint8_t vision_yaw_inert_in_gate(const DartVisionAxisEkf_t *kf,
-                                        float meas_lam_deg)
+static uint8_t vision_inert_in_gate(const DartVisionAxisEkf_t *kf,
+                                    float meas_lam_deg)
 {
     float innov;
 
@@ -578,7 +444,7 @@ static uint8_t vision_yaw_inert_in_gate(const DartVisionAxisEkf_t *kf,
             (innov <= DART_VISION_INERT_GATE_DEG)) ? 1U : 0U;
 }
 
-static void vision_yaw_inert_update(DartVisionAxisEkf_t *kf, float meas_lam_deg)
+static void vision_inert_update(DartVisionAxisEkf_t *kf, float meas_lam_deg)
 {
     float innov;
     float s;
@@ -591,7 +457,7 @@ static void vision_yaw_inert_update(DartVisionAxisEkf_t *kf, float meas_lam_deg)
 
     if (!kf->initialized)
     {
-        vision_yaw_inert_init(kf, meas_lam_deg);
+        vision_inert_init(kf, meas_lam_deg);
         return;
     }
 
@@ -655,7 +521,9 @@ static void vision_raw_rate_update(DartVisionAxisEkf_t *state,
  * @param now_ms 当前系统时间（毫秒）
  */
 static void update_vision_filter(float dt, uint32_t now_ms,
-                                 float ins_yaw_deg, uint8_t ins_valid)
+                                 float gyro_yaw_deg,
+                                 float gyro_pitch_down_deg,
+                                 uint8_t ins_valid)
 {
     uint32_t sequence_before;
     uint32_t sequence_after;
@@ -665,7 +533,8 @@ static void update_vision_filter(float dt, uint32_t now_ms,
     uint8_t sample_recognized;
     uint8_t measurement_valid;
 #if DART_VISION_FILTER_MODE == DART_VISION_FILTER_EKF
-    float meas_lam_deg = 0.0f;
+    float meas_yaw_deg = 0.0f;
+    float meas_pitch_deg = 0.0f;
 #else
     uint8_t previous_recognized;
     uint8_t rate_valid;
@@ -676,25 +545,24 @@ static void update_vision_filter(float dt, uint32_t now_ms,
     float measured_x_angle;
     float measured_y_angle;
 #endif
-    /* 引导中心固定为 (0,0)：OpenMV 发送的是相对 ROI 中心的偏移。
-       焦距仍用图像半宽计算，不能跟着引导中心变化。 */
+    /* 引导中心固定为 (0,0)：OpenMV 发送相对 ROI 中心的像素偏移 */
     float center_x = 0.0f;
     float center_y = 0.0f;
     float focal_x = DART_CAMERA_FOCAL_X_PX;
     float focal_y = DART_CAMERA_FOCAL_Y_PX;
 
 #if DART_VISION_FILTER_MODE == DART_VISION_FILTER_EKF
-    /* 先进行预测：yaw 走惯性系线性 KF，pitch 保留原像素域 EKF */
-    vision_yaw_inert_predict(&DartControl.vision_x_ekf, dt);
-    vision_ekf_predict(&DartControl.vision_y_ekf, dt);
+    /* 方案 A 双轴预测：yaw 与 pitch 均走惯性系线性 KF */
+    vision_inert_predict(&DartControl.vision_x_ekf, dt);
+    vision_inert_predict(&DartControl.vision_y_ekf, dt);
 #else
-    /* RAW_RATE 模式只在新视觉帧到达时更新。 */
     (void)dt;
-    (void)ins_yaw_deg;
+    (void)gyro_yaw_deg;
+    (void)gyro_pitch_down_deg;
     (void)ins_valid;
 #endif
 
-    /* 以无锁方式读取视觉邮箱，确保数据一致性 */
+    /* 无锁读取视觉邮箱，确保帧数据一致性 */
     do
     {
         sequence_before = DartControl.vision_mailbox.sequence;
@@ -705,7 +573,6 @@ static void update_vision_filter(float dt, uint32_t now_ms,
         sequence_after = DartControl.vision_mailbox.sequence;
     } while (sequence_before != sequence_after);
 
-    /* 如果有新帧，则更新当前视觉状态。 */
     if (sequence_after != DartControl.processed_vision_sequence)
     {
         DartControl.processed_vision_sequence = sequence_after;
@@ -727,32 +594,37 @@ static void update_vision_filter(float dt, uint32_t now_ms,
             float cam_yaw_deg = DART_CAMERA_YAW_SIGN *
                                 atanf(((float)sample_x - center_x) / focal_x) *
                                 DART_RAD_TO_DEG + DART_CAMERA_YAW_BIAS_DEG;
+            float cam_pitch_deg = DART_CAMERA_PITCH_SIGN *
+                                  atanf(((float)sample_y - center_y) / focal_y) *
+                                  DART_RAD_TO_DEG + DART_CAMERA_PITCH_BIAS_DEG;
             float yaw_delayed = ins_valid
-                                ? yaw_hist_get_delayed(sample_tick,
-                                                       DART_VISION_DELAY_MS,
-                                                       ins_yaw_deg)
+                                ? gyro_hist_get_delayed(gyro_yaw_hist_deg100,
+                                                        sample_tick,
+                                                        DART_VISION_DELAY_MS,
+                                                        gyro_yaw_deg)
                                 : 0.0f;
+            float pitch_delayed = ins_valid
+                                  ? gyro_hist_get_delayed(gyro_pitch_hist_deg100,
+                                                          sample_tick,
+                                                          DART_VISION_DELAY_MS,
+                                                          gyro_pitch_down_deg)
+                                  : 0.0f;
 
-            meas_lam_deg = wrap_180(yaw_delayed + cam_yaw_deg);
+            meas_yaw_deg = wrap_180(yaw_delayed + cam_yaw_deg);
+            meas_pitch_deg = wrap_180(pitch_delayed + cam_pitch_deg);
             measurement_valid =
-                (vision_yaw_inert_in_gate(&DartControl.vision_x_ekf,
-                                          meas_lam_deg) &&
-                 vision_ekf_measurement_in_gate(&DartControl.vision_y_ekf,
-                                                (float)sample_y,
-                                                center_y, focal_y)) ? 1U : 0U;
+                (vision_inert_in_gate(&DartControl.vision_x_ekf, meas_yaw_deg) &&
+                 vision_inert_in_gate(&DartControl.vision_y_ekf, meas_pitch_deg))
+                ? 1U : 0U;
         }
 #endif
 
         if (measurement_valid)
         {
 #if DART_VISION_FILTER_MODE == DART_VISION_FILTER_EKF
-            /* 两轴量测均有效，才更新滤波器与目标有效时间戳。 */
-            vision_yaw_inert_update(&DartControl.vision_x_ekf, meas_lam_deg);
-            vision_ekf_update(&DartControl.vision_y_ekf,
-                              (float)sample_y, center_y, focal_y);
+            vision_inert_update(&DartControl.vision_x_ekf, meas_yaw_deg);
+            vision_inert_update(&DartControl.vision_y_ekf, meas_pitch_deg);
 #else
-            /* 位置直接跟随当前帧，只对视线角速率做轻量低通，
-               以保留前视追踪所需的速率分量。 */
             frame_dt_ms = sample_tick -
                           DartControl.telemetry.vision.last_target_ms;
             rate_valid =
@@ -789,14 +661,10 @@ static void update_vision_filter(float dt, uint32_t now_ms,
         }
         else
         {
-            /* 未识别到有效目标，丢失帧计数增加 */
             DartControl.telemetry.vision.lost_frame_count++;
             if (DartControl.telemetry.vision.lost_frames < 255U)
                 DartControl.telemetry.vision.lost_frames++;
 #if DART_VISION_FILTER_MODE == DART_VISION_FILTER_RAW_RATE
-            /* 丢帧不清零（2026-11-19）：清零是阶跃，PN 的速率指令会跟着跳一半，
-               而丢一帧并不代表视线角速率真的变成 0。改为逐帧衰减，
-               让陈旧速率自然淡出，同时不砍出阶跃。 */
             DartControl.vision_x_ekf.rate *= DART_VISION_RATE_LOST_DECAY;
             DartControl.vision_y_ekf.rate *= DART_VISION_RATE_LOST_DECAY;
             if (fabsf(DartControl.vision_x_ekf.rate) <
@@ -809,7 +677,6 @@ static void update_vision_filter(float dt, uint32_t now_ms,
         }
     }
 
-    /* 判断视觉链路是否有效：有帧且未超时 */
     DartControl.telemetry.vision.link_valid =
         ((DartControl.telemetry.vision.frame_count != 0U) &&
          ((now_ms - DartControl.telemetry.vision.last_frame_ms) <=
@@ -819,37 +686,35 @@ static void update_vision_filter(float dt, uint32_t now_ms,
         DartControl.vision_y_ekf.initialized)
     {
 #if DART_VISION_FILTER_MODE == DART_VISION_FILTER_EKF
-        /* 方案 A：由惯性系视线角前推至当前时刻并减去实时 yaw，得到零转动滞后的相对视线角 */
+        /* 方案 A 双轴：惯性视线角前推至当前时刻并减去实时陀螺积分角，得零转动滞后相对视线角 */
         {
-            float lam_now_deg = wrap_180(
+            float delay_s = (float)DART_VISION_DELAY_MS * 0.001f;
+            float lam_yaw_now = wrap_180(
                 DartControl.vision_x_ekf.angle +
-                DartControl.vision_x_ekf.rate *
-                ((float)DART_VISION_DELAY_MS * 0.001f));
-            float los_yaw_deg = wrap_180(lam_now_deg -
-                                         (ins_valid ? ins_yaw_deg : 0.0f));
+                DartControl.vision_x_ekf.rate * delay_s);
+            float lam_pitch_now = wrap_180(
+                DartControl.vision_y_ekf.angle +
+                DartControl.vision_y_ekf.rate * delay_s);
 
-            /* 2026-11-21：原先这里把滤波后的角度反投影回像素存进
-               filtered_x/filtered_y，但全工程无人读取，且每 2 ms 周期要跑
-               两次软浮点 tanf（F103 无 FPU）。已删除字段与赋值。 */
-            DartControl.telemetry.vision.los_yaw_deg = los_yaw_deg;
+            DartControl.telemetry.vision.los_yaw_deg =
+                wrap_180(lam_yaw_now - (ins_valid ? gyro_yaw_deg : 0.0f));
+            DartControl.telemetry.vision.los_pitch_deg =
+                wrap_180(lam_pitch_now - (ins_valid ? gyro_pitch_down_deg : 0.0f));
         }
 #else
-        /* RAW_RATE 不做位置滤波。2026-11-21 删除 filtered_x/y 的镜像赋值。 */
         DartControl.telemetry.vision.los_yaw_deg =
             DART_CAMERA_YAW_SIGN * DartControl.vision_x_ekf.angle * DART_RAD_TO_DEG +
             DART_CAMERA_YAW_BIAS_DEG;
-#endif
         DartControl.telemetry.vision.los_pitch_deg =
             DART_CAMERA_PITCH_SIGN * DartControl.vision_y_ekf.angle * DART_RAD_TO_DEG +
             DART_CAMERA_PITCH_BIAS_DEG;
+#endif
 
-        /* 目标保持有效：链路有效且目标未超时保持时间 */
         DartControl.telemetry.vision.valid =
             (DartControl.telemetry.vision.link_valid &&
              ((now_ms - DartControl.telemetry.vision.last_target_ms) <=
               DART_TARGET_LOST_HOLD_MS)) ? 1U : 0U;
 
-        /* 目标丢失过久，复位 EKF，重新捕获 */
         if ((now_ms - DartControl.telemetry.vision.last_target_ms) >
             DART_TARGET_REACQUIRE_RESET_MS)
         {
@@ -863,16 +728,13 @@ static void update_vision_filter(float dt, uint32_t now_ms,
         DartControl.telemetry.vision.valid = 0U;
     }
 
-    /* 视觉链路错误标志：启动宽限期后仍无有效链路 */
     DartControl.vision_link_error =
         (((now_ms - DartControl.control_start_ms) > DART_VISION_STARTUP_GRACE_MS) &&
          !DartControl.telemetry.vision.link_valid) ? 1U : 0U;
     DartControl.telemetry.state = control_get_state();
 }
 
-/* 统一获取 INS 系惯性视线偏航角速率（度/秒）。
-   EKF 模式下由方案 A 惯性系 KF 直接给出，不叠加实时 gz，彻底消除相位错位泄漏；
-   RAW_RATE 模式下保留原相机角速率 + 机体角速率合成路径。 */
+/* 相机平面惯性视线偏航角速率（度/秒，左转为正）。 */
 static float vision_inertial_yaw_rate_dps(const INS_t *ins)
 {
 #if DART_VISION_FILTER_MODE == DART_VISION_FILTER_EKF
@@ -881,6 +743,19 @@ static float vision_inertial_yaw_rate_dps(const INS_t *ins)
 #else
     return (DART_CAMERA_YAW_SIGN * DartControl.vision_x_ekf.rate +
             DART_INS_YAW_RATE_RAD_S(ins)) * DART_RAD_TO_DEG;
+#endif
+}
+
+/* 相机平面惯性视线俯仰角速率（度/秒，低头/目标下移为正）。 */
+static float vision_inertial_pitch_rate_dps(const INS_t *ins)
+{
+#if DART_VISION_FILTER_MODE == DART_VISION_FILTER_EKF
+    (void)ins;
+    return DartControl.vision_y_ekf.rate;
+#else
+    return DART_CAMERA_PITCH_SIGN *
+           (DartControl.vision_y_ekf.rate -
+            DART_INS_PITCH_RATE_RAD_S(ins)) * DART_RAD_TO_DEG;
 #endif
 }
 
@@ -1354,23 +1229,15 @@ static void run_descent_guidance(const INS_t *ins)
     }
     DartControl.descent_target_seen = 1U;
 
-    /* 获取 INS 系惯性视线角速率（EKF 模式已由方案 A 在量测端完成延迟对齐） */
+    /* 双轴惯性视线角速率（EKF 模式下两轴均由方案 A 机体陀螺积分延迟对齐） */
     camera_yaw_rate = vision_inertial_yaw_rate_dps(ins);
-    /* 像素速率取相机 Y 轴；俯仰约定取反后，机体俯仰角速率与之符号相反。 */
-    camera_pitch_rate = DART_CAMERA_PITCH_SIGN *
-                        (DartControl.vision_y_ekf.rate -
-                         DART_INS_PITCH_RATE_RAD_S(ins)) * DART_RAD_TO_DEG;
-    /* 横滚角提前算：PN 的 ω 也要用它从相机平面旋回机体轴（2026-11-21）。 */
+    camera_pitch_rate = vision_inertial_pitch_rate_dps(ins);
     roll_rad = DART_INS_ROLL_DEG(ins) * DART_DEG_TO_RAD;
     cos_roll = cosf(roll_rad);
     sin_roll = sinf(roll_rad);
 
-    /* PN 用未钳位的角速率：原来的 15 度/秒是给前视项留的，对 PN 太紧。 */
     pn_omega_yaw = constrain_float(camera_yaw_rate,
                                    -DART_PN_RATE_MAX, DART_PN_RATE_MAX);
-
-    /* ω 低通：目标对准时真实 ω 只有 1~2 度/秒，估计噪声却有 7~8。
-       不滤就提增益等于放大噪声，详见 DART_PN_RATE_LPF_RC_S 处的实测表。 */
     {
         float rc = DART_PN_RATE_LPF_RC_S;
         float alpha = (rc > 0.0f)
@@ -1382,127 +1249,140 @@ static void run_descent_guidance(const INS_t *ins)
         pn_omega_yaw = pn_omega_lpf;
     }
 
-    /* 遥测在旋转前取样：这个 ω 是「相机平面」的惯性视线角速率，与 CSV 里
-       los_yaw_deg 的差分同一轴系，tools/eval_vis_rate.py 拿后者当真值。 */
+    /* 遥测在 roll 旋转前取样（相机平面口径，保持 eval_vis_rate.py 兼容） */
     dbg_pn_omega = pn_omega_yaw;
 
-    /* PN 的 ω 必须在机体轴：相机固连机体，滚转 phi 时图像轴随之旋转，
-       omega_body_yaw = cos(phi)*omega_img_x + sin(phi)*omega_img_y，
-       与下面角度指令用的是同一套变换。
-       不旋就是「相机轴取数、机体轴相减」：滚转 16 度、omega_pitch 35 度/秒时
-       漏 0.28*35 约 10 度/秒，经 K*N=24 折算约 240 微秒，已经到满量程。
-       11.20 实测：漏项中位 0.6 度/秒（可忽略），5% 的帧超过 96 微秒等效舵偏。 */
+    /* 将双轴惯性视线角速率与纯视线角从相机平面旋转到机体轴 */
     {
-        float rate_pitch = constrain_float(camera_pitch_rate,
-                                           -DART_PN_RATE_MAX, DART_PN_RATE_MAX);
+        float rate_pitch_cam = constrain_float(camera_pitch_rate,
+                                               -DART_PITCH_PN_RATE_MAX,
+                                               DART_PITCH_PN_RATE_MAX);
+        float omega_body_yaw = cos_roll * pn_omega_yaw + sin_roll * rate_pitch_cam;
+        float omega_body_pitch = -sin_roll * pn_omega_yaw + cos_roll * rate_pitch_cam;
+        float los_body_yaw = constrain_float(
+            cos_roll * DartControl.telemetry.vision.los_yaw_deg +
+            sin_roll * DartControl.telemetry.vision.los_pitch_deg,
+            -DART_LEAD_COMMAND_LIMIT_DEG, DART_LEAD_COMMAND_LIMIT_DEG);
+        float los_body_pitch = constrain_float(
+            -sin_roll * DartControl.telemetry.vision.los_yaw_deg +
+            cos_roll * DartControl.telemetry.vision.los_pitch_deg,
+            -DART_PITCH_COMMAND_LIMIT_DEG, DART_PITCH_COMMAND_LIMIT_DEG);
 
-        pn_omega_yaw = cos_roll * pn_omega_yaw + sin_roll * rate_pitch;
-    }
+        camera_yaw_rate = constrain_float(camera_yaw_rate,
+                                          -DART_LOS_RATE_LIMIT_DEG_S,
+                                          DART_LOS_RATE_LIMIT_DEG_S);
+        camera_pitch_rate = constrain_float(camera_pitch_rate,
+                                            -DART_LOS_RATE_LIMIT_DEG_S,
+                                            DART_LOS_RATE_LIMIT_DEG_S);
 
-    camera_yaw_rate = constrain_float(camera_yaw_rate,
-                                      -DART_LOS_RATE_LIMIT_DEG_S,
-                                      DART_LOS_RATE_LIMIT_DEG_S);
-    camera_pitch_rate = constrain_float(camera_pitch_rate,
-                                        -DART_LOS_RATE_LIMIT_DEG_S,
-                                        DART_LOS_RATE_LIMIT_DEG_S);
+        /* 前视追踪指令（供 yaw MODE 0/2、pitch 原方案及遥测输出使用） */
+        camera_yaw_command = lead_pursuit_command(
+            DartControl.telemetry.vision.los_yaw_deg, camera_yaw_rate);
+        camera_pitch_command = lead_pursuit_command(
+            DartControl.telemetry.vision.los_pitch_deg, camera_pitch_rate);
 
-    /* 前视追踪：指令 = 视线角 + 前视时间 × 视线角速率（前视项已在函数内限幅） */
-    camera_yaw_command = lead_pursuit_command(
-        DartControl.telemetry.vision.los_yaw_deg, camera_yaw_rate);
-    camera_pitch_command = lead_pursuit_command(
-        DartControl.telemetry.vision.los_pitch_deg, camera_pitch_rate);
+        yaw_command = constrain_float(
+            cos_roll * camera_yaw_command + sin_roll * camera_pitch_command,
+            -DART_LEAD_COMMAND_LIMIT_DEG, DART_LEAD_COMMAND_LIMIT_DEG);
+        pitch_command = constrain_float(
+            -sin_roll * camera_yaw_command + cos_roll * camera_pitch_command,
+            -DART_PITCH_COMMAND_LIMIT_DEG, DART_PITCH_COMMAND_LIMIT_DEG);
 
-    /* 根据当前横滚角将相机平面指令旋转到机体俯仰/偏航（cos/sin 上面已算好） */
-    yaw_command = cos_roll * camera_yaw_command + sin_roll * camera_pitch_command;
-    pitch_command = -sin_roll * camera_yaw_command + cos_roll * camera_pitch_command;
-    yaw_command = constrain_float(yaw_command,
-                                  -DART_LEAD_COMMAND_LIMIT_DEG,
-                                  DART_LEAD_COMMAND_LIMIT_DEG);
-    /* pitch 用更紧的限幅：俯仰指令要乘速率增益变成低头速率，
-       15 度会要求 75 度/秒，超过舵面稳定能力；yaw 仍用 15 度。 */
-    pitch_command = constrain_float(pitch_command,
-                                    -DART_PITCH_COMMAND_LIMIT_DEG,
-                                    DART_PITCH_COMMAND_LIMIT_DEG);
+        if (DART_MODE == DART_MODE_PITCH)
+        {
+            yaw_command = 0.0f;
+            reset_pid(&DartControl.yaw_vision_pid);
+        }
+        else if (DART_MODE == DART_MODE_YAW)
+        {
+            pitch_command = 0.0f;
+            reset_pid(&DartControl.pitch_vision_pid);
+        }
 
-    /* 下位机模式：pitch/yaw 单轴时另一轴复位并输出 0；both/default 两轴 */
-    if (DART_MODE == DART_MODE_PITCH)
-    {
-        yaw_command = 0.0f;
-        reset_pid(&DartControl.yaw_vision_pid);
-    }
-    else if (DART_MODE == DART_MODE_YAW)
-    {
-        pitch_command = 0.0f;
-        reset_pid(&DartControl.pitch_vision_pid);
-    }
+        DartControl.telemetry.target_yaw_deg = yaw_command;
+        DartControl.telemetry.target_pitch_deg = pitch_command;
+        DartControl.telemetry.output_yaw_deg = yaw_command;
+        DartControl.telemetry.output_pitch_deg =
+            DART_DESCENT_PITCH_OUTPUT_SIGN * pitch_command;
 
-    /* 记录下发给 OpenMV 的目标角（机体坐标，PID 前的指令） */
-    DartControl.telemetry.target_yaw_deg = yaw_command;
-    DartControl.telemetry.target_pitch_deg = pitch_command;
-    DartControl.telemetry.output_yaw_deg = yaw_command;
-    /* 遥测里的 OP 是经过下降段方向修正后的俯仰指令。 */
-    DartControl.telemetry.output_pitch_deg =
-        DART_DESCENT_PITCH_OUTPUT_SIGN * pitch_command;
-
-    /* yaw 制导：0=角度 PID / 1=速率型 PN / 2=PID+攻角增益 */
-    yaw_rate_now = DART_INS_YAW_RATE_RAD_S(ins) * DART_RAD_TO_DEG;
-    yaw_u = 0.0f;
-    dbg_a_cmd = 0.0f;
-    if (DART_MODE != DART_MODE_PITCH)
-    {
+        /* yaw 制导：0=角度 PID / 1=速率型 PN+纯视线角居中 / 2=PID+攻角增益 */
+        yaw_rate_now = DART_INS_YAW_RATE_RAD_S(ins) * DART_RAD_TO_DEG;
+        yaw_u = 0.0f;
+        dbg_a_cmd = 0.0f;
+        if (DART_MODE != DART_MODE_PITCH)
+        {
 #if (DART_YAW_PN_MODE == DART_YAW_PN_MODE_RATE)
-        {
-            float rate_cmd = DART_PN_SIGN * DART_PN_N * pn_omega_yaw +
-                             DART_PN_K_LOS * yaw_command;
-            rate_cmd = constrain_float(rate_cmd,
-                                       -DART_PN_RATE_MAX, DART_PN_RATE_MAX);
-            yaw_u = DART_PN_K_RATE * (rate_cmd - yaw_rate_now);
-            yaw_u = constrain_float(yaw_u,
-                                    -DART_PN_OUT_MAX, DART_PN_OUT_MAX);
-        }
+            {
+                float rate_cmd = DART_PN_SIGN * DART_PN_N * omega_body_yaw +
+                                 DART_PN_K_LOS * los_body_yaw;
+                rate_cmd = constrain_float(rate_cmd,
+                                           -DART_PN_RATE_MAX, DART_PN_RATE_MAX);
+                yaw_u = DART_PN_K_RATE * (rate_cmd - yaw_rate_now);
+                yaw_u = constrain_float(yaw_u,
+                                        -DART_PN_OUT_MAX, DART_PN_OUT_MAX);
+            }
 #elif (DART_YAW_PN_MODE == DART_YAW_PN_MODE_AOA)
-        /* PID + 攻角增益：偏置叠在 PID 输入角上，稳态维持固定偏头 */
-        {
-            float aoa_deg = 0.0f;
+            {
+                float aoa_deg = 0.0f;
 
-            (void)yaw_rate_now;
-            if (DartControl.yaw_best_valid)
-            {
-                float dpsi = wrap_180(DartControl.yaw_best_deg -
-                                      DartControl.telemetry.launch_yaw_deg);
-                aoa_deg = dart_aoa_gain_of(dpsi) * dpsi;
-                aoa_deg = constrain_float(aoa_deg,
-                                          -DART_YAW_AOA_MAX_DEG,
-                                          DART_YAW_AOA_MAX_DEG);
+                (void)yaw_rate_now;
+                (void)omega_body_yaw;
+                (void)los_body_yaw;
+                if (DartControl.yaw_best_valid)
+                {
+                    float dpsi = wrap_180(DartControl.yaw_best_deg -
+                                          DartControl.telemetry.launch_yaw_deg);
+                    aoa_deg = dart_aoa_gain_of(dpsi) * dpsi;
+                    aoa_deg = constrain_float(aoa_deg,
+                                              -DART_YAW_AOA_MAX_DEG,
+                                              DART_YAW_AOA_MAX_DEG);
+                }
+                {
+                    float cmd = constrain_float(
+                        yaw_command + aoa_deg,
+                        -(DART_LEAD_COMMAND_LIMIT_DEG + DART_YAW_AOA_MAX_DEG),
+                        (DART_LEAD_COMMAND_LIMIT_DEG + DART_YAW_AOA_MAX_DEG));
+                    dbg_a_cmd = aoa_deg;
+                    yaw_u = calculate_axis_pid(&DartControl.yaw_vision_pid, cmd,
+                                               DART_INS_YAW_RATE_RAD_S(ins));
+                }
             }
-            {
-                float cmd = constrain_float(
-                    yaw_command + aoa_deg,
-                    -(DART_LEAD_COMMAND_LIMIT_DEG + DART_YAW_AOA_MAX_DEG),
-                    (DART_LEAD_COMMAND_LIMIT_DEG + DART_YAW_AOA_MAX_DEG));
-                dbg_a_cmd = aoa_deg;
-                yaw_u = calculate_axis_pid(&DartControl.yaw_vision_pid, cmd,
-                                           DART_INS_YAW_RATE_RAD_S(ins));
-            }
-        }
 #else
-        (void)yaw_rate_now;
-        yaw_u = calculate_axis_pid(&DartControl.yaw_vision_pid, yaw_command,
-                                   DART_INS_YAW_RATE_RAD_S(ins));
+            (void)yaw_rate_now;
+            (void)omega_body_yaw;
+            (void)los_body_yaw;
+            yaw_u = calculate_axis_pid(&DartControl.yaw_vision_pid, yaw_command,
+                                       DART_INS_YAW_RATE_RAD_S(ins));
 #endif
-    }
-    DartControl.telemetry.yaw_output_us = yaw_u;
+        }
+        DartControl.telemetry.yaw_output_us = yaw_u;
 
-    DartControl.telemetry.pitch_output_us = 0.0f;
-    if (DART_MODE != DART_MODE_YAW)
-        /* 视觉修正叠加在基准滑翔角上，再走速率环。
-           符号：pitch_command > 0 表示目标在视线下方，需要低头，
-           故目标角 = 当前角 - 指令。旧 PID 是 out = -KP*cmd，同样反号。
-           11.12 实测 corr(los_pitch, out_pitch) = -0.84 佐证该约定。
-           走 vision_pitch_output：与滑翔段共用速率环，但用更快的一组增益。 */
-        DartControl.telemetry.pitch_output_us =
-            vision_pitch_output(ins,
-                                DART_INS_PITCH_DEG(ins) - pitch_command);
+        /* pitch 制导：0=原速率环 / 1=Yaw 同款 PN+中心对齐（沿用不对称限幅 -150/+250 us） */
+        DartControl.telemetry.pitch_output_us = 0.0f;
+        if (DART_MODE != DART_MODE_YAW)
+        {
+#if (DART_PITCH_GUIDANCE_MODE == DART_PITCH_GUIDANCE_PN)
+            float rate_cmd_p = DART_PITCH_PN_N * omega_body_pitch +
+                               DART_PITCH_PN_K_LOS * los_body_pitch;
+            float rate_now_p = -DART_INS_PITCH_RATE_RAD_S(ins) * DART_RAD_TO_DEG;
+
+            rate_cmd_p = constrain_float(rate_cmd_p,
+                                         -DART_PITCH_PN_RATE_MAX,
+                                         DART_PITCH_PN_RATE_MAX);
+            DartControl.telemetry.pitch_output_us = constrain_float(
+                DART_DESCENT_PITCH_OUTPUT_SIGN * DART_PITCH_PN_K_RATE *
+                (rate_cmd_p - rate_now_p),
+                -DART_GLIDE_MAX_OUTPUT_DOWN_US,
+                DART_GLIDE_MAX_OUTPUT_UP_US);
+#else
+            (void)omega_body_pitch;
+            (void)los_body_pitch;
+            DartControl.telemetry.pitch_output_us =
+                vision_pitch_output(ins,
+                                    DART_INS_PITCH_DEG(ins) - pitch_command);
+#endif
+        }
+    }
     write_servo_outputs(DartControl.telemetry.pitch_output_us,
                         DartControl.telemetry.yaw_output_us,
                         DartControl.telemetry.roll_output_us);
@@ -1524,9 +1404,7 @@ static void run_debug_guidance(const INS_t *ins)
     if (DartControl.telemetry.vision.valid)
     {
         camera_yaw_rate = vision_inertial_yaw_rate_dps(ins);
-        camera_pitch_rate = DART_CAMERA_PITCH_SIGN *
-                            (DartControl.vision_y_ekf.rate -
-                             DART_INS_PITCH_RATE_RAD_S(ins)) * DART_RAD_TO_DEG;
+        camera_pitch_rate = vision_inertial_pitch_rate_dps(ins);
         camera_yaw_rate = constrain_float(camera_yaw_rate,
                                           -DART_LOS_RATE_LIMIT_DEG_S,
                                           DART_LOS_RATE_LIMIT_DEG_S);
@@ -1887,8 +1765,8 @@ void control_Init(void)
 
     pn_omega_lpf = 0.0f;
 #if DART_VISION_FILTER_MODE == DART_VISION_FILTER_EKF
-    yaw_hist_reset();
-    yaw_hist_imu_armed = 0U;
+    gyro_hist_reset();
+    gyro_hist_imu_armed = 0U;
 #endif
 
     /* 舵机遥测初始化为中位 */
@@ -1994,11 +1872,11 @@ void control_Task(void)
     if (!DartControl.imu_ready)
     {
         /* IMU 就绪前仍更新视觉链路状态，保证起飞前链路告警正常。 */
-        update_vision_filter(dt, now_ms, 0.0f, 0U);
+        update_vision_filter(dt, now_ms, 0.0f, 0.0f, 0U);
         return;
     }
 
-    /* 先取 IMU 数据快照并写入 yaw 历史缓冲，再更新视觉滤波（省 1 拍错位并对齐延迟）。 */
+    /* 先取 IMU 快照并积分机体角速率写入历史缓冲，再更新视觉滤波（零 1/cos(pitch) 畸变）。 */
     shared_ins = get_gyro_data_Point();
     primask = __get_PRIMASK();
     __disable_irq();
@@ -2012,17 +1890,24 @@ void control_Task(void)
 #endif
 
 #if DART_VISION_FILTER_MODE == DART_VISION_FILTER_EKF
-    if (!yaw_hist_imu_armed)
+    if (!gyro_hist_imu_armed)
     {
-        yaw_hist_reset();
+        gyro_hist_reset();
         vision_ekf_reset(&DartControl.vision_x_ekf);
-        yaw_hist_imu_armed = 1U;
+        vision_ekf_reset(&DartControl.vision_y_ekf);
+        gyro_hist_imu_armed = 1U;
     }
-    yaw_hist_push(ins_snapshot.Yaw, now_ms);
+    gyro_yaw_int_deg = wrap_180(
+        gyro_yaw_int_deg +
+        DART_INS_YAW_RATE_RAD_S(&ins_snapshot) * DART_RAD_TO_DEG * dt);
+    gyro_pitch_down_int_deg = wrap_180(
+        gyro_pitch_down_int_deg +
+        (-DART_INS_PITCH_RATE_RAD_S(&ins_snapshot)) * DART_RAD_TO_DEG * dt);
+    gyro_hist_push(gyro_yaw_int_deg, gyro_pitch_down_int_deg, now_ms);
+    update_vision_filter(dt, now_ms, gyro_yaw_int_deg, gyro_pitch_down_int_deg, 1U);
+#else
+    update_vision_filter(dt, now_ms, 0.0f, 0.0f, 1U);
 #endif
-
-    /* 更新视觉滤波器（预测 + 延迟对齐量测更新） */
-    update_vision_filter(dt, now_ms, ins_snapshot.Yaw, 1U);
 
     /* 制导调试量每周期更新，地面/DEBUG 态同样经遥测上报。 */
     dbg_a_cmd = 0.0f;
@@ -2093,9 +1978,10 @@ void control_Task(void)
             DartControl.yaw_calib_done = 1U;
             DartControl.yaw_calib_active = 0U;
 #if DART_VISION_FILTER_MODE == DART_VISION_FILTER_EKF
-            /* 标定完成后 yaw 基准发生一次性跳变，清空历史缓冲与惯性 KF 避免引入假角速度。 */
-            yaw_hist_reset();
+            /* 标定结束（静止状态），同步归零双轴陀螺积分与惯性 KF，保持干净初态。 */
+            gyro_hist_reset();
             vision_ekf_reset(&DartControl.vision_x_ekf);
+            vision_ekf_reset(&DartControl.vision_y_ekf);
 #endif
         }
 #endif

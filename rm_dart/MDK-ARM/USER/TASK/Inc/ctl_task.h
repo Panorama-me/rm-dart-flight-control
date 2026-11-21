@@ -179,16 +179,12 @@ extern "C" {
 #error "DART_DESCENT_LOCK_LAST_VISUAL_COMMAND_ENABLE must be 0 or 1"
 #endif
 
-/* 视觉滤波：pitch 走像素 EKF，yaw 走延迟对齐惯性系线性 KF（方案 A） */
-#define DART_VISION_EKF_PROCESS_NOISE        300.0f                 /* pitch EKF 过程噪声（Q=300 兼顾噪声与相位滞后） */
-#define DART_VISION_EKF_MEAS_NOISE_PX         25.0f                 /* pitch EKF 量测方差（px^2） */
-#define DART_VISION_EKF_GATE_PX               40.0f                 /* pitch EKF 创新门限（px） */
-/* 方案 A：量测进 KF 前用 yaw(t - DELAY) 抵消机身转动，消除 gz 泄漏；
-   台架快甩机头观察 vis_rate_dps 贴零程度微调 DELAY_MS（MED_WIN=1 实测约 20 ms）。 */
-#define DART_VISION_DELAY_MS                  20U                   /* 视觉链路延迟补偿（毫秒） */
-#define DART_YAW_HIST_LEN                     64U                   /* yaw 历史环形缓冲（2 ms * 64 = 128 ms） */
-#define DART_VISION_INERT_Q                  1200.0f                 /* 惯性系 yaw KF 过程噪声 ((度/秒)^2/秒) */
-#define DART_VISION_INERT_R_DEG2               0.25f                /* 惯性系 yaw KF 量测方差（度^2，约 0.5 度） */
+/* 视觉滤波（方案 A 双轴）：yaw/pitch 均用机体陀螺积分角延迟对齐 + 惯性系线性 KF，
+   彻底消除大俯冲角下欧拉 yaw 的 1/cos(pitch) 放大泄漏与 pitch 未对齐毛刺。 */
+#define DART_VISION_DELAY_MS                  20U                   /* 视觉链路延迟补偿（毫秒，MED_WIN=1 实测约 20） */
+#define DART_YAW_HIST_LEN                     64U                   /* yaw/pitch 陀螺积分历史缓冲（2 ms * 64 = 128 ms） */
+#define DART_VISION_INERT_Q                  1200.0f                /* 惯性系 KF 连续过程噪声 ((度/秒)^2/秒) */
+#define DART_VISION_INERT_R_DEG2               0.25f                /* 惯性系 KF 量测方差（度^2，约 0.5 度） */
 #define DART_VISION_INERT_GATE_DEG             6.0f                 /* 惯性系创新门限（度） */
 
 /* 视觉滤波模式：0 = EKF/方案 A（默认），1 = RAW_RATE（备用帧间差分） */
@@ -330,13 +326,28 @@ extern "C" {
 #define DART_YAW_PN_MODE_RATE                    1
 #define DART_YAW_PN_MODE_AOA                     2
 #define DART_YAW_PN_MODE                         DART_YAW_PN_MODE_RATE
-#define DART_PN_N                                3.0f   /* 比例导引系数 */
+#define DART_PN_N                                2.5f   /* 比例导引系数（2026-11-21 由 3.0 收敛防过中心甩头） */
 #define DART_PN_SIGN                             1.0f   /* +1 = INS 系左转为正，与 yaw_u 同号 */
 #define DART_PN_RATE_MAX                       150.0f   /* 速率指令限幅（度/秒，放宽防大 gz 时过早松舵） */
 #define DART_PN_K_RATE                           8.0f   /* 速率环增益（微秒/(度/秒)） */
-#define DART_PN_K_LOS                            2.0f   /* 角度对齐居中项（1/秒），补强远距/短窗口起转 */
+#define DART_PN_K_LOS                            1.5f   /* 纯视线角居中项（1/秒，不再叠前视项） */
 #define DART_PN_OUT_MAX                        250.0f   /* 速率型 PN 偏航输出限幅（微秒） */
 #define DART_PN_RATE_LPF_RC_S                    0.0f   /* 可选视线速率低通（秒）；方案 A 下设 0 省滞后 */
+
+/* 下降段 pitch 制导模式：0 = 原速率环（vision_pitch_output），1 = Yaw 同款 PN + 中心对齐 */
+#define DART_PITCH_GUIDANCE_RATE_LOOP            0U
+#define DART_PITCH_GUIDANCE_PN                   1U
+#ifndef DART_PITCH_GUIDANCE_MODE
+#define DART_PITCH_GUIDANCE_MODE                 DART_PITCH_GUIDANCE_PN
+#endif
+#if ((DART_PITCH_GUIDANCE_MODE != DART_PITCH_GUIDANCE_RATE_LOOP) && \
+     (DART_PITCH_GUIDANCE_MODE != DART_PITCH_GUIDANCE_PN))
+#error "Invalid DART_PITCH_GUIDANCE_MODE"
+#endif
+#define DART_PITCH_PN_N                          2.5f   /* 俯仰比例导引系数 */
+#define DART_PITCH_PN_K_LOS                      3.0f   /* 俯仰纯视线角居中项（1/秒） */
+#define DART_PITCH_PN_K_RATE                     2.5f   /* 俯仰速率环增益（微秒/(度/秒)，与滑翔速率环一致） */
+#define DART_PITCH_PN_RATE_MAX                 120.0f   /* 俯仰期望速率限幅（度/秒）；输出仍受 -150/+250 us 保护 */
 
 /* yaw 攻角增益（MODE 2）：G(|dpsi|) = MIN + (MAX - MIN)*|dpsi|/(|dpsi| + HALF)，叠加于 PID 输入 */
 #define DART_YAW_AOA_GAIN_MIN                   0.8f
